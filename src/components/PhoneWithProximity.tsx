@@ -1,0 +1,1122 @@
+import React, { useState, useRef, useEffect } from "react";
+import svgPathsPhone from "../imports/svg-xt55a23x92";
+import svgPaths from "../imports/svg-z15fdg36cs";
+import imgBezel from "figma:asset/898d6b6326c8696cb62d35eae092fcdb03f4c874.png";
+import imgContainer from "figma:asset/a5317ca03420503f743ecd3c4362839a25200ed5.png";
+import imgContainer1 from "figma:asset/657112b8561c538adb09c89e9ac53d95cfa5fa37.png";
+import imgContainer2 from "figma:asset/327cad5e9939300065ed59e7f94891c19e10157e.png";
+import { ProximityData } from "./DraggablePhone";
+import { RigidBody } from "../utils/physics";
+import HomeScreenIPhone from "../imports/HomeScreenIPhone";
+import HomeIndicator from "../imports/HomeIndicator";
+import { BackButton } from "./GroupScreen";
+
+interface PhoneWithProximityProps {
+  body: RigidBody;
+  proximityData: ProximityData[];
+  tool: 'move' | 'interact';
+  allBodies: RigidBody[]; // Added to map phoneId to profile images
+  onConfirm?: (phoneId: number) => void; // Callback when user confirms
+  onUnconfirm?: (phoneId: number) => void; // Callback when user cancels confirmation
+  confirmedPhones?: Set<number>; // Set of confirmed phone IDs
+  groupSearchOpenPhones?: Set<number>; // Phones currently in GroupSearch state
+  onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
+}
+
+function Container() {
+  return <div className="absolute bg-black h-[4.133px] left-[100.11px] rounded-[82.8px] top-[664.53px] w-[110.945px]" data-name="Container" />;
+}
+
+function DynamicIslandSpacer() {
+  return <div className="absolute h-[8.273px] left-[103.91px] top-[4.97px] w-[102.656px]" data-name="DynamicIslandSpacer" />;
+}
+
+function Time() {
+  return (
+    <div className="absolute h-[18.211px] left-[41px] top-0 w-[30.188px]" data-name="Time">
+      <p className="absolute font-['SF_Pro:Semibold',sans-serif] font-[590] leading-[18.214px] left-[15.5px] text-[14.075px] text-center text-nowrap text-white top-[0.5px] translate-x-[-50%] whitespace-pre" style={{ fontVariationSettings: "'wdth' 100" }}>
+        9:41
+      </p>
+    </div>
+  );
+}
+
+function Icon() {
+  return (
+    <div className="h-[10.117px] overflow-clip relative shrink-0 w-full" data-name="Icon">
+      <div className="absolute bottom-[7.98%] left-0 right-[0.65%] top-0" data-name="Cellular Connection">
+        <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 16 10">
+          <path clipRule="evenodd" d={svgPathsPhone.p3a3b3180} fill="var(--fill-0, white)" fillRule="evenodd" id="Cellular Connection" />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function Container1() {
+  return (
+    <div className="absolute content-stretch flex flex-col h-[10.117px] items-start left-[15.67px] top-[0.32px] w-[15.891px]" data-name="Container">
+      <Icon />
+    </div>
+  );
+}
+
+function Icon1() {
+  return (
+    <div className="h-[10.203px] overflow-clip relative shrink-0 w-full" data-name="Icon">
+      <div className="absolute bottom-[7.21%] left-0 right-[5.39%] top-0" data-name="Wifi">
+        <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 14 10">
+          <path clipRule="evenodd" d={svgPathsPhone.p3a610b80} fill="var(--fill-0, white)" fillRule="evenodd" id="Wifi" />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function Container2() {
+  return (
+    <div className="absolute content-stretch flex flex-col h-[10.203px] items-start left-[37.35px] top-[0.27px] w-[14.188px]" data-name="Container">
+      <Icon1 />
+    </div>
+  );
+}
+
+function Battery() {
+  return (
+    <div className="absolute contents inset-[3.76%_1.62%_5.92%_1.8%]" data-name="Battery">
+      <div className="absolute inset-[3.76%_11.81%_5.92%_1.8%]" data-name="Border">
+        <div className="absolute inset-[-4.18%_-2.08%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 21 11">
+            <path d={svgPathsPhone.p1caeca00} id="Border" opacity="0.35" stroke="var(--stroke-0, white)" strokeWidth="0.812051" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute inset-[35.98%_1.62%_33.34%_93.59%]" data-name="Cap">
+        <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 2 4">
+          <path d={svgPathsPhone.p8622700} fill="var(--fill-0, white)" id="Cap" opacity="0.4" />
+        </svg>
+      </div>
+      <div className="absolute inset-[15.05%_17.21%_17.21%_7.2%]" data-name="Capacity">
+        <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 18 8">
+          <path d={svgPathsPhone.p26eb7e40} fill="var(--fill-0, white)" id="Capacity" />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function Icon2() {
+  return (
+    <div className="h-[10.758px] overflow-clip relative shrink-0 w-full" data-name="Icon">
+      <Battery />
+    </div>
+  );
+}
+
+function Battery1() {
+  return (
+    <div className="absolute content-stretch flex flex-col h-[10.758px] items-start left-[57.33px] top-0 w-[22.625px]" data-name="Battery">
+      <Icon2 />
+    </div>
+  );
+}
+
+function Levels() {
+  return (
+    <div className="absolute h-[10.758px] left-[206.56px] top-[3.73px] w-[103.906px]" data-name="Levels">
+      <Container1 />
+      <Container2 />
+      <Battery1 />
+    </div>
+  );
+}
+
+function Frame() {
+  return (
+    <div className="absolute h-[18.211px] left-[-0.66px] top-[19px] w-[310.469px]" data-name="Frame">
+      <DynamicIslandSpacer />
+      <Time />
+      <Levels />
+    </div>
+  );
+}
+
+function Screen({
+  body,
+  proximityData,
+  tool,
+  allBodies,
+  onConfirm,
+  onUnconfirm,
+  confirmedPhones,
+  groupSearchOpenPhones,
+  onGroupSearchStateChange,
+}: {
+  body: RigidBody;
+  proximityData: ProximityData[];
+  tool: 'move' | 'interact';
+  allBodies: RigidBody[];
+  onConfirm?: (phoneId: number) => void;
+  onUnconfirm?: (phoneId: number) => void;
+  confirmedPhones?: Set<number>;
+  groupSearchOpenPhones?: Set<number>;
+  onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
+}) {
+  // homeScreen  -> zero state
+  // groupSearch -> opened notification / scanning state
+  // groupConfirm -> confirmation / group screen state
+  const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm'>('homeScreen');
+  const swipeStartRef = useRef<{ y: number; time: number; x: number } | null>(null);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isSwiping, setIsSwiping] = useState(false);
+  const currentSwipeDistanceRef = useRef(0);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [confirmSwipeOffset, setConfirmSwipeOffset] = useState(0);
+  const [isConfirmSwiping, setIsConfirmSwiping] = useState(false);
+  const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const springDuration = '0.45s';
+
+  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm') => {
+    setViewState(nextState);
+    if (onGroupSearchStateChange) {
+      onGroupSearchStateChange(body.id, nextState === 'groupSearch');
+    }
+  };
+  
+  // Check if any phones are within 8.5cm
+  const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
+  const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
+  const showNotification = hasNearbyPhones && viewState === 'homeScreen';
+  const swipeProgress = viewState === 'groupSearch' ? Math.min(swipeOffset / 180, 1) : 0;
+  const swipeTranslation = viewState === 'groupSearch' ? -Math.min(swipeOffset, 240) * 0.35 : 0;
+  const proximityBorderRadius = viewState === 'homeScreen' ? '36px' : `${38 - swipeProgress * 10}px`;
+  const confirmMaxVisualOffset = 140;
+  const confirmSwipeProgress = Math.min(confirmSwipeOffset / confirmMaxVisualOffset, 1);
+  const confirmCircleScale = 1 - confirmSwipeProgress * 0.18; // subtle shrink for gray circle container
+  
+  // Handle notification click to expand to full view - only works in interact mode
+  const handleNotificationClick = (e: React.MouseEvent) => {
+    if (tool !== 'interact') return; // Prevent clicks in move mode
+    
+    e.stopPropagation();
+    console.log('Expanding notification to full view');
+    
+    // Open GroupSearch state
+    updateViewState('groupSearch');
+  };
+  
+  // Handle swipe up gesture on home bar - use global mouse tracking
+  const handleSwipeStart = (e: React.MouseEvent | React.TouchEvent) => {
+    if (isTransitioning) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    swipeStartRef.current = { y: clientY, time: Date.now(), x: clientX };
+    setSwipeOffset(0);
+    currentSwipeDistanceRef.current = 0;
+    setIsSwiping(true);
+    console.log('🟢 SWIPE STARTED at X:', clientX, 'Y:', clientY);
+    
+    // Add global listeners for mouse move and up
+    if ('touches' in e) {
+      window.addEventListener('touchmove', handleGlobalMove as any);
+      window.addEventListener('touchend', handleGlobalEnd as any);
+    } else {
+      window.addEventListener('mousemove', handleGlobalMove as any);
+      window.addEventListener('mouseup', handleGlobalEnd as any);
+    }
+  };
+  
+  const handleGlobalMove = (e: MouseEvent | TouchEvent) => {
+    if (!swipeStartRef.current || isTransitioning) return;
+    
+    e.stopPropagation();
+    e.preventDefault();
+    const clientX = 'touches' in e ? (e as TouchEvent).touches[0].clientX : (e as MouseEvent).clientX;
+    const clientY = 'touches' in e ? (e as TouchEvent).touches[0].clientY : (e as MouseEvent).clientY;
+    
+    // Calculate screen-space delta
+    const screenDeltaX = clientX - swipeStartRef.current.x;
+    const screenDeltaY = clientY - swipeStartRef.current.y;
+    
+    // Transform delta to phone-local space using phone's rotation
+    const rotation = body.rotation;
+    const cos = Math.cos(-rotation); // Negative because we're transforming FROM screen TO phone
+    const sin = Math.sin(-rotation);
+    
+    // Rotate the delta vector
+    const localDeltaX = screenDeltaX * cos - screenDeltaY * sin;
+    const localDeltaY = screenDeltaX * sin + screenDeltaY * cos;
+    
+    // In phone-local space, "up" is negative Y
+    const swipeUpDistance = -localDeltaY; // Positive = swipe up in phone space
+    
+    // Update offset for visual feedback
+    if (swipeUpDistance > 0) {
+      const newOffset = Math.min(swipeUpDistance, 676);
+      setSwipeOffset(newOffset);
+      currentSwipeDistanceRef.current = swipeUpDistance;
+    }
+  };
+  
+  const handleGlobalEnd = (e: MouseEvent | TouchEvent) => {
+    if (isTransitioning) return;
+    e.stopPropagation();
+    e.preventDefault();
+    
+    // Remove global listeners
+    window.removeEventListener('mousemove', handleGlobalMove as any);
+    window.removeEventListener('mouseup', handleGlobalEnd as any);
+    window.removeEventListener('touchmove', handleGlobalMove as any);
+    window.removeEventListener('touchend', handleGlobalEnd as any);
+    
+    const finalSwipeDistance = currentSwipeDistanceRef.current;
+    console.log('🔴 SWIPE ENDED. Final distance:', finalSwipeDistance.toFixed(0), 'px');
+    
+    // If swiped up past 150px threshold, morph to notification state
+    if (finalSwipeDistance > 150) {
+      console.log('✅ THRESHOLD MET! Morphing to notification state...');
+      setIsTransitioning(true);
+      
+      const goToNotification = () => {
+        // Leaving the GroupSearch view via home bar should clear confirmation state
+        if (onUnconfirm) {
+          onUnconfirm(body.id);
+        }
+        updateViewState('homeScreen');
+        setSwipeOffset(0);
+        setIsTransitioning(false);
+      };
+      
+      if ('startViewTransition' in document) {
+        (document as any).startViewTransition(goToNotification);
+      } else {
+        goToNotification();
+      }
+    } else {
+      // Bounce back if not enough swipe
+      console.log('❌ Only swiped', finalSwipeDistance.toFixed(0), 'px (need >150px). Bouncing back.');
+      setSwipeOffset(0);
+    }
+    
+    swipeStartRef.current = null;
+    currentSwipeDistanceRef.current = 0;
+    setIsSwiping(false);
+  };
+  
+  // Handle swipe on "Swipe to Confirm" area to go to group screen
+  const confirmSwipeStartRef = useRef<{ y: number; time: number; x: number } | null>(null);
+  const currentConfirmSwipeDistanceRef = useRef(0);
+  
+  const handleConfirmSwipeStart = (e: React.MouseEvent | React.TouchEvent) => {
+    if (isTransitioning || tool !== 'interact') return;
+    e.stopPropagation();
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    confirmSwipeStartRef.current = { y: clientY, time: Date.now(), x: clientX };
+    currentConfirmSwipeDistanceRef.current = 0;
+    setConfirmSwipeOffset(0);
+    setIsConfirmSwiping(true);
+    console.log('🟢 CONFIRM SWIPE STARTED at X:', clientX, 'Y:', clientY);
+    
+    // Add global listeners
+    if ('touches' in e) {
+      window.addEventListener('touchmove', handleConfirmGlobalMove as any);
+      window.addEventListener('touchend', handleConfirmGlobalEnd as any);
+    } else {
+      window.addEventListener('mousemove', handleConfirmGlobalMove as any);
+      window.addEventListener('mouseup', handleConfirmGlobalEnd as any);
+    }
+  };
+  
+  const handleConfirmGlobalMove = (e: MouseEvent | TouchEvent) => {
+    if (!confirmSwipeStartRef.current || isTransitioning) return;
+    
+    e.stopPropagation();
+    e.preventDefault();
+    const clientX = 'touches' in e ? (e as TouchEvent).touches[0].clientX : (e as MouseEvent).clientX;
+    const clientY = 'touches' in e ? (e as TouchEvent).touches[0].clientY : (e as MouseEvent).clientY;
+    
+    // Calculate screen-space delta
+    const screenDeltaX = clientX - confirmSwipeStartRef.current.x;
+    const screenDeltaY = clientY - confirmSwipeStartRef.current.y;
+    
+    // Transform delta to phone-local space using phone's rotation
+    const rotation = body.rotation;
+    const cos = Math.cos(-rotation);
+    const sin = Math.sin(-rotation);
+    
+    // Rotate the delta vector
+    const localDeltaX = screenDeltaX * cos - screenDeltaY * sin;
+    const localDeltaY = screenDeltaX * sin + screenDeltaY * cos;
+    
+    // In phone-local space, "up" is negative Y
+    const swipeUpDistance = -localDeltaY;
+    
+    // Track swipe distance for threshold detection
+    currentConfirmSwipeDistanceRef.current = swipeUpDistance;
+    
+    // Update visual offset for "Swipe up to confirm" guidance
+    if (swipeUpDistance > 0) {
+      const maxVisualOffset = 140;
+      const newOffset = Math.min(swipeUpDistance, maxVisualOffset);
+      setConfirmSwipeOffset(newOffset);
+    } else {
+      // Allow dragging back down to naturally follow the finger
+      setConfirmSwipeOffset(0);
+    }
+  };
+  
+  const handleConfirmGlobalEnd = (e: MouseEvent | TouchEvent) => {
+    if (isTransitioning) return;
+    e.stopPropagation();
+    e.preventDefault();
+    
+    // Remove global listeners
+    window.removeEventListener('mousemove', handleConfirmGlobalMove as any);
+    window.removeEventListener('mouseup', handleConfirmGlobalEnd as any);
+    window.removeEventListener('touchmove', handleConfirmGlobalMove as any);
+    window.removeEventListener('touchend', handleConfirmGlobalEnd as any);
+    
+    const finalSwipeDistance = currentConfirmSwipeDistanceRef.current;
+    console.log('🔴 CONFIRM SWIPE ENDED. Final distance:', finalSwipeDistance.toFixed(0), 'px');
+    
+    // If swiped up past 150px threshold, transition to GroupConfirm screen
+    if (finalSwipeDistance > 150) {
+      console.log('✅ CONFIRM THRESHOLD MET! Marking as confirmed and transitioning to GroupConfirm...');
+      setIsTransitioning(true);
+      
+      // Mark this phone as confirmed
+      if (onConfirm) {
+        onConfirm(body.id);
+      }
+      
+      // Transition to GroupConfirm state
+      updateViewState('groupConfirm');
+      setIsTransitioning(false);
+      
+      // Reset visual offset once transition is done
+      setConfirmSwipeOffset(0);
+    }
+    
+    // If threshold is not met, ease the swipe indicator back down
+    if (finalSwipeDistance <= 150) {
+      setConfirmSwipeOffset(0);
+    }
+    
+    confirmSwipeStartRef.current = null;
+    currentConfirmSwipeDistanceRef.current = 0;
+    setIsConfirmSwiping(false);
+  };
+  
+  // Get nearby phones within range
+  const nearbyPhones = proximityData
+    .filter(data => data.distanceCm <= 8.5)
+    .map(data => allBodies.find(b => b.id === data.phoneId))
+    .filter((phone): phone is RigidBody => phone !== undefined);
+  
+  // Split into confirmed and unconfirmed
+  const confirmedNearbyPhones = nearbyPhones.filter(phone => confirmedPhones?.has(phone.id));
+  const unconfirmedNearbyPhones = nearbyPhones.filter(phone => {
+    const isConfirmed = confirmedPhones?.has(phone.id);
+    const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
+    return !isConfirmed && isInGroupSearch;
+  });
+  
+  // Add current phone if confirmed
+  const allConfirmedPhones = confirmedPhones?.has(body.id) 
+    ? [body, ...confirmedNearbyPhones] 
+    : confirmedNearbyPhones;
+  const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
+  const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
+  const notificationHeight = '140px';
+  const isHomeNotification = viewState === 'homeScreen';
+  const groupTitleTop = isHomeNotification ? 24 : 74;
+  const groupTitleFontSize = isHomeNotification ? 18 : 28;
+
+  // Control visibility and exit animation of "Waiting for Others..." pill
+  const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
+  const [isUnconfirmedExiting, setIsUnconfirmedExiting] = useState(false);
+  const prevHasUnconfirmedRef = useRef(unconfirmedNearbyPhones.length > 0);
+
+  useEffect(() => {
+    const hasUnconfirmed = unconfirmedNearbyPhones.length > 0;
+    const prevHasUnconfirmed = prevHasUnconfirmedRef.current;
+    prevHasUnconfirmedRef.current = hasUnconfirmed;
+
+    // Outside groupConfirm, just follow presence (no special exit animation)
+    if (viewState !== 'groupConfirm') {
+      setShowUnconfirmedPill(hasUnconfirmed);
+      setIsUnconfirmedExiting(false);
+      return;
+    }
+
+    // While there are unconfirmed users, ensure pill is visible and in "enter" state
+    if (hasUnconfirmed) {
+      setShowUnconfirmedPill(true);
+      setIsUnconfirmedExiting(false);
+      return;
+    }
+
+    // Transitioned from some unconfirmed -> none while in groupConfirm: play reverse animation
+    if (prevHasUnconfirmed && !hasUnconfirmed) {
+      setIsUnconfirmedExiting(true);
+      setShowUnconfirmedPill(true);
+
+      const timeout = setTimeout(() => {
+        setShowUnconfirmedPill(false);
+        setIsUnconfirmedExiting(false);
+      }, 450); // matches springDuration "0.45s"
+
+      return () => clearTimeout(timeout);
+    }
+  }, [unconfirmedNearbyPhones.length, viewState]);
+  
+  return (
+    <div 
+      className="absolute bg-black overflow-clip rounded-[29.303px]" 
+      data-name="Screen"
+      style={{ 
+        pointerEvents: 'auto', 
+        zIndex: 1,
+        top: -2,
+        left: -1,
+        width: 312,
+        height: 680,
+      }}
+    >
+      {/* Homescreen - always rendered behind */}
+      <div style={{ position: 'absolute', inset: 0, zIndex: 1, opacity: viewState === 'homeScreen' ? 1 : 0, willChange: 'opacity', transition: `opacity ${springDuration} ${springCurve}` }}>
+        <HomeScreenIPhone />
+      </div>
+      
+      {/* Unified view that morphs between homeScreen notification, groupSearch, and groupConfirm */}
+      {hasNearbyPhones && (
+        <div
+          onClick={viewState === 'homeScreen' ? handleNotificationClick : undefined}
+          style={{
+            position: 'absolute',
+            top: viewState === 'homeScreen' ? '11px' : '-1px',
+            left: viewState === 'homeScreen' ? '11px' : '-1px',
+            right: viewState === 'homeScreen' ? '11px' : '-1px',
+            bottom: viewState === 'homeScreen' ? 'auto' : '-1px',
+            height: viewState === 'homeScreen' ? notificationHeight : 'calc(100% + 2px)',
+            backgroundColor: viewState === 'homeScreen' ? '#000000' : '#000000',
+            backdropFilter: viewState === 'homeScreen' ? 'blur(20px)' : 'none',
+            borderRadius: proximityBorderRadius,
+            cursor: viewState === 'homeScreen' ? 'pointer' : 'default',
+            pointerEvents: viewState === 'groupConfirm' ? 'none' : 'auto',
+            boxShadow: viewState === 'homeScreen' ? '0px 4px 12px rgba(0, 0, 0, 0.3)' : 'none',
+            zIndex:
+              viewState === 'groupSearch'
+                ? 10
+                : viewState === 'groupConfirm'
+                  ? 1
+                  : 2,
+            overflow: 'hidden',
+            willChange: 'transform, opacity, height, border-radius, top',
+            transform: viewState === 'groupSearch' ? `translateY(${swipeTranslation}px)` : 'none',
+            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}, transform 0.35s ${springCurve}`,
+          }}
+        >
+          {/* Shared cluster circle/profile - morphs across homeScreen, groupSearch, groupConfirm */}
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top:
+                viewState === 'homeScreen'
+                  ? '60%'
+                  : viewState === 'groupSearch'
+                    ? 'calc(50% - 18px)'
+                    : '60.26px', // slightly above "New Group" pill
+              transform:
+                viewState === 'homeScreen'
+                  ? 'translate(-50%, -50%)'
+                  : viewState === 'groupSearch'
+                    ? `translate(-50%, -50%) scale(${confirmCircleScale})`
+                    : 'translateX(-50%)',
+              width:
+                viewState === 'homeScreen'
+                  ? '24px'
+                  : viewState === 'groupSearch'
+                    ? '400px'
+                    : '48px',
+              height:
+                viewState === 'homeScreen'
+                  ? '24px'
+                  : viewState === 'groupSearch'
+                    ? '400px'
+                    : '48px',
+              borderRadius:
+                viewState === 'homeScreen'
+                  ? '50%'
+                  : viewState === 'groupSearch'
+                    ? '400px'
+                    : '24px',
+              backgroundColor: viewState === 'homeScreen' ? 'transparent' : '#222222',
+              willChange: 'transform, width, height, border-radius',
+              // Use snappier spring when entering groupConfirm (shrink),
+              // but keep a longer, softer easing for all other transitions
+              // (e.g. growing back out of groupConfirm).
+              transition:
+                viewState === 'groupConfirm'
+                  ? `all ${springDuration} ${springCurve}`
+                  : 'all 0.6s cubic-bezier(0.2, 0.8, 0.2, 1)',
+              overflow: 'visible',
+            }}
+          >
+            {/* Center profile picture - this phone - always visible */}
+            {viewState !== 'groupConfirm' && (
+              <div
+                className="absolute left-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%]"
+                style={{
+                  // Make the primary user's bubble more prominent in notification view
+                  width: viewState === 'homeScreen' ? '44px' : '80px',
+                  height: viewState === 'homeScreen' ? '44px' : '80px',
+                  borderRadius: '50%',
+                  willChange: 'transform, width, height',
+                  transition: `all ${springDuration} ${springCurve}`,
+                  overflow: 'hidden',
+                }}
+              >
+                <img
+                  alt=""
+                  className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                  style={{ borderRadius: 'inherit' }}
+                  src={body.profileImage}
+                />
+              </div>
+            )}
+
+              {/* All confirmed users filling the gray circle in groupConfirm */}
+              {viewState === 'groupConfirm' &&
+                allConfirmedPhones.map((user, index) => {
+                  const totalCircles = allConfirmedPhones.length;
+                  const centerX = 24; // center of 48px container
+                  const centerY = 24;
+                  const containerRadius = 24;
+                  // Slightly smaller radius so circles can be larger and closer together
+                  const layoutRadius =
+                    totalCircles === 1 ? 0 : 12;
+                  const margin = 0.25;
+
+                  // Base size constraints (larger to further reduce visible gap)
+                  const baseDiameter = 24;
+                  const minDiameter = 8;
+
+                  let circleSize = baseDiameter;
+
+                  if (totalCircles > 1) {
+                    const neighborDist =
+                      2 * layoutRadius * Math.sin(Math.PI / totalCircles);
+                    const maxDiameterFromNeighbors = neighborDist - 2 * margin;
+                    circleSize = Math.min(circleSize, maxDiameterFromNeighbors);
+                  }
+
+                  // Ensure we stay inside container
+                  const maxDiameterFromContainer =
+                    2 * (containerRadius - layoutRadius - margin);
+                  circleSize = Math.min(circleSize, maxDiameterFromContainer);
+                  circleSize = Math.max(minDiameter, circleSize);
+
+                  const r = circleSize / 2;
+
+                  const angle =
+                    totalCircles === 1
+                      ? 0
+                      : (2 * Math.PI * index) / totalCircles;
+
+                  const x = centerX + layoutRadius * Math.cos(angle);
+                  const y = centerY + layoutRadius * Math.sin(angle);
+
+                  const left = x - r;
+                  const top = y - r;
+
+                  return (
+                    <div
+                      key={user.id}
+                      className="absolute overflow-hidden"
+                      style={{
+                        left,
+                        top,
+                        width: circleSize,
+                        height: circleSize,
+                        borderRadius: circleSize / 2,
+                        boxShadow: '0 0 6px rgba(0,0,0,0.45)',
+                      }}
+                    >
+                      <img
+                        alt=""
+                        className="absolute inset-0 max-w-none object-cover size-full"
+                        src={user.profileImage}
+                      />
+                    </div>
+                  );
+                })}
+          </div>
+          
+          {/* Nearby phone profiles - positioned based on proximity data.
+              Hidden in groupConfirm so they no longer track and instead appear
+              only in the bottom cluster UI. */}
+          {viewState !== 'groupConfirm' && (() => {
+            const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+
+            if (nearbyWithinRange.length === 0) return null;
+
+            // Shared constants for layout and sizing
+            // Notification view: exaggerate distances slightly so positions feel more "spread out"
+            const notificationMaxDisplayRadius = 100;
+            const notificationMinDisplayRadius = 35;
+            const notificationMaxRangeCm = 8.5;
+            const notificationSize = 40; // Fixed size in notification state
+
+            const fullViewMaxDisplayRadius = 200;
+            const fullViewMinDisplayRadius = 50;
+            const fullViewMaxRangeCm = 8.5;
+            const fullViewMinSize = 48;
+            const fullViewMaxSize = 75;
+
+            type LayoutEntry = {
+              phoneId: number;
+              angleDeg: number;
+              notificationRadius: number;
+              fullViewRadius: number;
+              fullViewSize: number;
+              profileImage: string;
+            };
+
+            const layoutEntries: LayoutEntry[] = nearbyWithinRange.map(data => {
+              // Slightly non-linear scaling in notification view to push farther phones further out
+              const notificationNormalized = Math.min(
+                Math.max(data.distanceCm / notificationMaxRangeCm, 0),
+                1,
+              );
+              const notificationRadius =
+                notificationMinDisplayRadius +
+                Math.pow(notificationNormalized, 1.2) *
+                  (notificationMaxDisplayRadius - notificationMinDisplayRadius);
+
+              const fullViewRadius =
+                fullViewMinDisplayRadius +
+                (data.distanceCm / fullViewMaxRangeCm) *
+                  (fullViewMaxDisplayRadius - fullViewMinDisplayRadius);
+
+              const fullViewSize =
+                fullViewMaxSize -
+                (data.distanceCm / fullViewMaxRangeCm) *
+                  (fullViewMaxSize - fullViewMinSize);
+
+              const nearbyPhone = allBodies.find(b => b.id === data.phoneId);
+              const profileImage = nearbyPhone?.profileImage || imgContainer1;
+
+              return {
+                phoneId: data.phoneId,
+                angleDeg: data.degrees,
+                notificationRadius,
+                fullViewRadius,
+                fullViewSize,
+                profileImage,
+              };
+            });
+
+            const toCartesian = (radius: number, angleDeg: number) => {
+              const angleRad = (angleDeg * Math.PI) / 180;
+              return {
+                x: Math.cos(angleRad) * radius,
+                y: Math.sin(angleRad) * radius,
+              };
+            };
+
+            const resolveOverlaps2D = (
+              xs: number[],
+              ys: number[],
+              sizes: number[],
+              margin: number,
+            ) => {
+              const iterations = 8;
+              const count = xs.length;
+
+              for (let it = 0; it < iterations; it++) {
+                for (let i = 0; i < count; i++) {
+                  for (let j = i + 1; j < count; j++) {
+                    const dx = xs[j] - xs[i];
+                    const dy = ys[j] - ys[i];
+                    let dist = Math.sqrt(dx * dx + dy * dy);
+                    const minDist = sizes[i] / 2 + sizes[j] / 2 + margin;
+
+                    if (dist < 1e-4) {
+                      // Prevent degenerate zero-distance cases
+                      dist = 1e-4;
+                    }
+
+                    if (dist < minDist) {
+                      const overlap = minDist - dist;
+                      const nx = dx / dist;
+                      const ny = dy / dist;
+                      const shift = overlap / 2;
+
+                      xs[i] -= nx * shift;
+                      ys[i] -= ny * shift;
+                      xs[j] += nx * shift;
+                      ys[j] += ny * shift;
+                    }
+                  }
+                }
+              }
+            };
+
+            // Notification positions (smaller radii and fixed size)
+            const notifXs: number[] = [];
+            const notifYs: number[] = [];
+            const notifSizes: number[] = [];
+
+            layoutEntries.forEach(entry => {
+              const { x, y } = toCartesian(entry.notificationRadius, entry.angleDeg);
+              notifXs.push(x);
+              notifYs.push(y);
+              notifSizes.push(notificationSize);
+            });
+
+            resolveOverlaps2D(notifXs, notifYs, notifSizes, 4);
+
+            // Full-view positions (larger radii and variable sizes)
+            const fullXs: number[] = [];
+            const fullYs: number[] = [];
+            const fullSizes: number[] = [];
+
+            layoutEntries.forEach(entry => {
+              const { x, y } = toCartesian(entry.fullViewRadius, entry.angleDeg);
+              fullXs.push(x);
+              fullYs.push(y);
+              fullSizes.push(entry.fullViewSize);
+            });
+
+            resolveOverlaps2D(fullXs, fullYs, fullSizes, 6);
+
+            const topOffset =
+              viewState === 'homeScreen' ? '60%' : 'calc(50% - 18px)';
+
+            return layoutEntries.map((entry, index) => {
+              const isHome = viewState === 'homeScreen';
+              const x = isHome ? notifXs[index] : fullXs[index];
+              const y = isHome ? notifYs[index] : fullYs[index];
+              const size = isHome ? notificationSize : fullSizes[index];
+
+              return (
+                <div
+                  key={entry.phoneId}
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: topOffset,
+                    transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                    width: `${size}px`,
+                    height: `${size}px`,
+                    borderRadius: isHome ? '50%' : `${size / 2}px`,
+                    willChange: 'transform, width, height',
+                    transition: `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}`,
+                    overflow: 'hidden',
+                    backgroundColor: 'white',
+                  }}
+                >
+                  <img
+                    alt=""
+                    className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                    style={{ borderRadius: 'inherit' }}
+                    src={entry.profileImage}
+                  />
+                </div>
+              );
+            });
+          })()}
+          
+          {/* Swipe to Confirm with arrow - only visible in full view */}
+          <div 
+            className="absolute h-[577.625px] left-[calc(50%+0.5px)] top-[31.19px] translate-x-[-50%] w-[577.626px]"
+            onMouseDown={handleConfirmSwipeStart}
+            onTouchStart={handleConfirmSwipeStart}
+            style={{
+              opacity: viewState === 'groupSearch' ? 1 : 0,
+              willChange: 'opacity, transform',
+              transition: `opacity ${springDuration} ${springCurve}`,
+              pointerEvents: viewState === 'groupSearch' ? 'auto' : 'none',
+              cursor: viewState === 'groupSearch' && tool === 'interact' ? 'grab' : 'default',
+            }}
+          >
+            <div
+              style={{
+                width: '100%',
+                height: '100%',
+                transform: `translateY(${-confirmSwipeOffset * 0.4}px)`,
+                willChange: 'transform',
+                transition: (isConfirmSwiping || isTransitioning)
+                  ? 'none'
+                  : `transform ${springDuration} ${springCurve}`,
+              }}
+            >
+              <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 578 578">
+                <g id="Group 154" style={{ "--fill-0": "white", "--stroke-0": "white" } as React.CSSProperties}>
+                  <path d={svgPaths.p282f9e80} fill="var(--fill-0, white)" id="Swipe to Confirm" />
+                  {/* Arrow has an ambient bob when idle (no active confirm swipe / transition) */}
+                  <path
+                    d={svgPaths.p3d304700}
+                    id="Vector"
+                    stroke="var(--stroke-0, white)"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="3"
+                    style={{
+                      transformOrigin: '50% 50%',
+                      animation:
+                        viewState === 'groupSearch' && !isConfirmSwiping && !isTransitioning
+                          ? 'swipeArrowBob 1.6s ease-in-out infinite'
+                          : 'none',
+                    }}
+                  />
+                </g>
+              </svg>
+            </div>
+          </div>
+          
+          {/* GroupDrop title - shrinks into top-left corner in notification view, larger lower title in full view */}
+          <p 
+            className="absolute font-['SF_Pro:Medium',sans-serif] font-[510] leading-[normal] left-[24px] text-nowrap text-white tracking-[-0.1504px] whitespace-pre" 
+            style={{ 
+              fontVariationSettings: "'wdth' 100",
+              top: `${groupTitleTop}px`,
+              fontSize: `${groupTitleFontSize}px`,
+              opacity: viewState === 'groupConfirm' ? 0 : 1,
+              willChange: 'opacity, top, font-size',
+              transition: `opacity ${springDuration} ${springCurve}, top ${springDuration} ${springCurve}, font-size ${springDuration} ${springCurve}`,
+            }}
+          >
+            GroupDrop
+          </p>
+          
+          {/* Scanning for Friends text - only visible in full view */}
+          <p 
+            className="absolute font-['SF_Pro:Regular',sans-serif] font-normal leading-[normal] left-[24px] text-[#666666] text-[14px] text-nowrap top-[57px] tracking-[-0.1504px] whitespace-pre" 
+            style={{ 
+              fontVariationSettings: "'wdth' 100",
+              opacity: viewState === 'groupSearch' ? 1 : 0,
+              willChange: 'opacity',
+              transition: `opacity ${springDuration} ${springCurve}`,
+            }}
+          >
+            Scanning for Friends...
+          </p>
+          
+          {/* Swipeable home bar - only visible in full view */}
+          {viewState === 'groupSearch' && (
+            <div
+              onMouseDown={handleSwipeStart}
+              onTouchStart={handleSwipeStart}
+              style={{
+                position: 'absolute',
+                bottom: '0',
+                left: '0',
+                right: '0',
+                height: '40px',
+                cursor: 'grab',
+                pointerEvents: 'auto',
+                zIndex: 1000,
+                display: 'flex',
+                alignItems: 'flex-end',
+                justifyContent: 'center',
+                paddingBottom: '6px',
+              }}
+            >
+              <div style={{ width: '110px', height: '3.5px' }}>
+                <HomeIndicator />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* GroupConfirm-specific UI (inline version of previous GroupScreen layout) */}
+      {viewState === 'groupConfirm' && (
+        <>
+          {/* Unconfirmed group members at bottom */}
+          {showUnconfirmedPill && (
+            <div
+              key={isUnconfirmedExiting ? 'unconfirmed-exit' : 'unconfirmed-enter'}
+              className="absolute bg-[#222222] left-[calc(50%+0.73px)] overflow-clip rounded-[400px] size-[400px] top-[calc(50%+315.5px)] translate-x-[-50%] translate-y-[-50%]"
+              data-name="unconfirmed-groupmembers"
+              style={{ 
+                zIndex: 5,
+                transformOrigin: '50% 100%',
+                willChange: 'transform, opacity',
+                animation: `fadeInGrowUp ${springDuration} ${springCurve} 0.05s both`,
+                animationDirection: isUnconfirmedExiting ? 'reverse' : 'normal',
+              }}
+            >
+              <p
+                className="absolute font-['SF_Pro:Regular',sans-serif] font-normal leading-[15.423px] left-[calc(50%-0.5px)] text-[11.567px] text-center text-nowrap text-white top-[calc(50%-44.48px)] tracking-[-0.1774px] translate-x-[-50%] whitespace-pre"
+                style={{ 
+                  fontVariationSettings: "'wdth' 100",
+                  willChange: 'transform, opacity',
+                  animation: `fadeInGrowUp ${springDuration} ${springCurve} 0.12s both`,
+                  animationDirection: isUnconfirmedExiting ? 'reverse' : 'normal',
+                }}
+              >
+                Waiting for Others...
+              </p>
+              
+              {/* Unconfirmed user avatars - symmetric cluster near the top of the circle */}
+              {unconfirmedNearbyPhones.map((user, index) => {
+                const count = unconfirmedNearbyPhones.length;
+                // Shift cluster a bit further left so it visually centers above the label
+                const centerX = 185; // horizontal visual center of cluster
+                const centerY = 70;  // vertical center of cluster
+
+                // Predefined symmetric layouts by count (offsets from center in px)
+                const layouts: { [key: number]: { x: number; y: number }[] } = {
+                  1: [{ x: 0, y: 0 }],
+                  2: [
+                    { x: -20, y: 0 },
+                    { x: 20, y: 0 },
+                  ],
+                  3: [
+                    { x: 0, y: -20 },
+                    { x: -22, y: 16 },
+                    { x: 22, y: 16 },
+                  ],
+                  4: [
+                    { x: -22, y: -14 },
+                    { x: 22, y: -14 },
+                    { x: -22, y: 18 },
+                    { x: 22, y: 18 },
+                  ],
+                  5: [
+                    { x: 0, y: -24 },
+                    { x: -24, y: -4 },
+                    { x: 24, y: -4 },
+                    { x: -14, y: 22 },
+                    { x: 14, y: 22 },
+                  ],
+                };
+
+                const layout =
+                  layouts[count] || layouts[Math.min(count, 5)] || layouts[1];
+                const offset = layout[index % layout.length];
+
+                const x = centerX + offset.x;
+                const y = centerY + offset.y;
+
+                const baseSize = 34;
+                const size =
+                  count <= 3 ? baseSize + 6 : count <= 5 ? baseSize : baseSize - 4;
+                const r = size / 2;
+
+                unconfirmedPlaced.push({ x, y, r });
+                
+                return (
+                  <div 
+                    key={user.id}
+                    className="absolute rounded-[77.114px] overflow-hidden"
+                    style={{
+                      left: `${x}px`,
+                      top: `${y}px`,
+                      width: `${size}px`,
+                      height: `${size}px`,
+                      willChange: 'transform, opacity',
+                      animation: `fadeInScale 0.45s cubic-bezier(0.22, 1, 0.36, 1) ${index * 0.08}s both`,
+                    }}
+                  >
+                    <img 
+                      alt="" 
+                      className="absolute inset-0 max-w-none object-cover size-full" 
+                      src={user.profileImage} 
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          
+          {/* Group name badge */}
+          <div
+            className="absolute bg-[#222222] box-border content-stretch flex gap-[6.169px] items-center justify-center left-[calc(50%-0.01px)] px-[9.254px] py-[6.169px] rounded-[77.114px] shadow-[0px_0px_23.134px_0px_rgba(0,0,0,0.15)] top-[100.26px] translate-x-[-50%]"
+            data-name="groupname"
+            style={{
+              zIndex: 6,
+              willChange: 'transform, opacity',
+              animation: 'fadeInSlideDown 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both',
+            }}
+          >
+            <p
+              className="font-['SF_Pro:Bold',sans-serif] font-bold leading-[normal] relative shrink-0 text-[12.338px] text-nowrap text-white tracking-[-0.116px] whitespace-pre"
+              style={{ fontVariationSettings: "'wdth' 100" }}
+            >
+              New Group
+            </p>
+          </div>
+
+          {/* Back button in top-left, matching Figma design */}
+          <div
+            className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]"
+            style={{
+              zIndex: 7,
+              willChange: 'transform, opacity',
+              animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both',
+            }}
+          >
+            <div className="flex-none scale-y-[-100%]">
+              <BackButton
+                tool={tool}
+                onClick={() => {
+                  // Going back from GroupConfirm should clear confirmation
+                  if (onUnconfirm) {
+                    onUnconfirm(body.id);
+                  }
+                  updateViewState('groupSearch');
+                }}
+              />
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Bezel() {
+  return (
+    <div className="absolute h-[710.523px] left-[-18.54px] top-[-17.76px] w-[347.539px]" data-name="Bezel" style={{ zIndex: 5, pointerEvents: 'none' }}>
+      <img alt="" className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full" src={imgBezel} />
+    </div>
+  );
+}
+
+export function PhoneWithProximity({
+  body,
+  proximityData,
+  tool,
+  allBodies,
+  onConfirm,
+  onUnconfirm,
+  confirmedPhones,
+  groupSearchOpenPhones,
+  onGroupSearchStateChange,
+}: PhoneWithProximityProps) {
+  return (
+    <div className="relative size-full bg-black" data-name="PhoneWithProximity">
+      <Screen
+        body={body}
+        proximityData={proximityData}
+        tool={tool}
+        allBodies={allBodies}
+        onConfirm={onConfirm}
+        onUnconfirm={onUnconfirm}
+        confirmedPhones={confirmedPhones}
+        groupSearchOpenPhones={groupSearchOpenPhones}
+        onGroupSearchStateChange={onGroupSearchStateChange}
+      />
+      <Bezel />
+    </div>
+  );
+}
