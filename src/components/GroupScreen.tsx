@@ -157,12 +157,14 @@ export function GroupScreen({ confirmedUsers, unconfirmedUsers, onBack, tool }: 
       
       {/* Confirmed group members cluster is now owned by PhoneWithProximity's shared circle */}
       
-      {/* Back button */}
-      <div className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]" style={{ willChange: 'transform, opacity', animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both' }}>
-        <div className="flex-none scale-y-[-100%]">
-          <BackButton onClick={onBack} tool={tool} />
+      {/* Back button - only show when there are unconfirmed users */}
+      {unconfirmedUsers.length > 0 && (
+        <div className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]" style={{ willChange: 'transform, opacity', animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both' }}>
+          <div className="flex-none scale-y-[-100%]">
+            <BackButton onClick={onBack} tool={tool} />
+          </div>
         </div>
-      </div>
+      )}
       
       <HomeIndicator />
       <StatusBar />

@@ -11,6 +11,17 @@ import HomeScreenIPhone from "../imports/HomeScreenIPhone";
 import HomeIndicator from "../imports/HomeIndicator";
 import { BackButton } from "./GroupScreen";
 
+interface ConfirmedGroup {
+  id: string;
+  memberIds: Set<number>;
+}
+
+interface PotentialGroup {
+  id: string;
+  memberIds: Set<number>;
+  confirmedIds: Set<number>;
+}
+
 interface PhoneWithProximityProps {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -21,6 +32,8 @@ interface PhoneWithProximityProps {
   confirmedPhones?: Set<number>; // Set of confirmed phone IDs
   groupSearchOpenPhones?: Set<number>; // Phones currently in GroupSearch state
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
+  confirmedGroups?: Map<string, ConfirmedGroup>; // Confirmed groups to get all members when group is confirmed
+  potentialGroups?: Map<string, PotentialGroup>; // Potential groups to get unconfirmed members
 }
 
 function Container() {
@@ -151,6 +164,8 @@ function Screen({
   confirmedPhones,
   groupSearchOpenPhones,
   onGroupSearchStateChange,
+  confirmedGroups,
+  potentialGroups,
 }: {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -161,6 +176,8 @@ function Screen({
   confirmedPhones?: Set<number>;
   groupSearchOpenPhones?: Set<number>;
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
+  confirmedGroups?: Map<string, ConfirmedGroup>;
+  potentialGroups?: Map<string, PotentialGroup>;
 }) {
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
@@ -187,8 +204,10 @@ function Screen({
   const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
   const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
   const showNotification = hasNearbyPhones && viewState === 'homeScreen';
-  const swipeProgress = viewState === 'groupSearch' ? Math.min(swipeOffset / 180, 1) : 0;
-  const swipeTranslation = viewState === 'groupSearch' ? -Math.min(swipeOffset, 240) * 0.35 : 0;
+  const swipeProgress = (viewState === 'groupSearch' || viewState === 'groupConfirm') ? Math.min(swipeOffset / 180, 1) : 0;
+  const swipeTranslation = (viewState === 'groupSearch' || viewState === 'groupConfirm') 
+    ? -Math.min(swipeOffset, 240) * 0.35 
+    : 0;
   const proximityBorderRadius = viewState === 'homeScreen' ? '36px' : `${38 - swipeProgress * 10}px`;
   const confirmMaxVisualOffset = 140;
   const confirmSwipeProgress = Math.min(confirmSwipeOffset / confirmMaxVisualOffset, 1);
@@ -280,10 +299,17 @@ function Screen({
       setIsTransitioning(true);
       
       const goToNotification = () => {
-        // Leaving the GroupSearch view via home bar should clear confirmation state
-        if (onUnconfirm) {
+        // Only unconfirm if not in a confirmed group (can't leave confirmed groups)
+        // Find which confirmed group this phone belongs to (if any)
+        const phoneConfirmedGroup = confirmedGroups 
+          ? Array.from(confirmedGroups.values()).find(group => group.memberIds.has(body.id))
+          : undefined;
+        
+        // Only unconfirm if we're leaving GroupSearch view and not in a confirmed group
+        if (viewState === 'groupSearch' && !phoneConfirmedGroup && onUnconfirm) {
           onUnconfirm(body.id);
         }
+        // If in groupConfirm view or in a confirmed group, don't unconfirm - just go home
         updateViewState('homeScreen');
         setSwipeOffset(0);
         setIsTransitioning(false);
@@ -419,16 +445,44 @@ function Screen({
   
   // Split into confirmed and unconfirmed
   const confirmedNearbyPhones = nearbyPhones.filter(phone => confirmedPhones?.has(phone.id));
-  const unconfirmedNearbyPhones = nearbyPhones.filter(phone => {
-    const isConfirmed = confirmedPhones?.has(phone.id);
-    const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
-    return !isConfirmed && isInGroupSearch;
-  });
   
-  // Add current phone if confirmed
-  const allConfirmedPhones = confirmedPhones?.has(body.id) 
-    ? [body, ...confirmedNearbyPhones] 
-    : confirmedNearbyPhones;
+  // Find which potential group this phone belongs to (if any)
+  const phonePotentialGroup = potentialGroups 
+    ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+    : undefined;
+  
+  // Find which confirmed group this phone belongs to (if any)
+  const phoneConfirmedGroup = confirmedGroups 
+    ? Array.from(confirmedGroups.values()).find(group => group.memberIds.has(body.id))
+    : undefined;
+  
+  // Get unconfirmed phones: if in a potential group, get members who haven't confirmed;
+  // otherwise, use proximity-based unconfirmed phones
+  const unconfirmedNearbyPhones = phonePotentialGroup
+    ? Array.from(phonePotentialGroup.memberIds)
+        .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
+        .map(id => allBodies.find(b => b.id === id))
+        .filter((phone): phone is RigidBody => phone !== undefined)
+    : nearbyPhones.filter(phone => {
+        const isConfirmed = confirmedPhones?.has(phone.id);
+        const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
+        return !isConfirmed && isInGroupSearch;
+      });
+  
+  // Get all confirmed phones: if in a confirmed group, get all group members;
+  // otherwise, use proximity-based confirmed phones
+  const allConfirmedPhones = phoneConfirmedGroup
+    ? Array.from(phoneConfirmedGroup.memberIds)
+        .map(id => allBodies.find(b => b.id === id))
+        .filter((phone): phone is RigidBody => phone !== undefined)
+    : confirmedPhones?.has(body.id) 
+      ? [body, ...confirmedNearbyPhones] 
+      : confirmedNearbyPhones;
+  
+  // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
+  const shouldShowUnifiedView = hasNearbyPhones || 
+    (viewState === 'groupConfirm' && (phoneConfirmedGroup || phonePotentialGroup)) ||
+    (viewState === 'groupSearch' && phonePotentialGroup);
   const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
   const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
   const notificationHeight = '140px';
@@ -476,7 +530,7 @@ function Screen({
   
   return (
     <div 
-      className="absolute bg-black overflow-clip rounded-[29.303px]" 
+      className="absolute bg-black rounded-[29.303px]" 
       data-name="Screen"
       style={{ 
         pointerEvents: 'auto', 
@@ -485,6 +539,10 @@ function Screen({
         left: -1,
         width: 312,
         height: 680,
+        overflow: (viewState === 'groupSearch' || viewState === 'groupConfirm') && swipeTranslation < 0 ? 'visible' : 'clip',
+        transform: (viewState === 'groupSearch' || viewState === 'groupConfirm') ? `translateY(${swipeTranslation}px)` : 'none',
+        transition: (isSwiping || isTransitioning) ? 'none' : `transform ${springDuration} ${springCurve}`,
+        willChange: 'transform',
       }}
     >
       {/* Homescreen - always rendered behind */}
@@ -493,7 +551,7 @@ function Screen({
       </div>
       
       {/* Unified view that morphs between homeScreen notification, groupSearch, and groupConfirm */}
-      {hasNearbyPhones && (
+      {shouldShowUnifiedView && (
         <div
           onClick={viewState === 'homeScreen' ? handleNotificationClick : undefined}
           style={{
@@ -516,9 +574,8 @@ function Screen({
                   ? 1
                   : 2,
             overflow: 'hidden',
-            willChange: 'transform, opacity, height, border-radius, top',
-            transform: viewState === 'groupSearch' ? `translateY(${swipeTranslation}px)` : 'none',
-            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}, transform 0.35s ${springCurve}`,
+            willChange: 'opacity, height, border-radius, top',
+            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}`,
           }}
         >
           {/* Shared cluster circle/profile - morphs across homeScreen, groupSearch, groupConfirm */}
@@ -939,7 +996,12 @@ function Screen({
 
       {/* GroupConfirm-specific UI (inline version of previous GroupScreen layout) */}
       {viewState === 'groupConfirm' && (
-        <>
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+          }}
+        >
           {/* Unconfirmed group members at bottom */}
           {showUnconfirmedPill && (
             <div
@@ -1056,29 +1118,66 @@ function Screen({
             </p>
           </div>
 
-          {/* Back button in top-left, matching Figma design */}
-          <div
-            className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]"
-            style={{
-              zIndex: 7,
-              willChange: 'transform, opacity',
-              animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both',
-            }}
-          >
-            <div className="flex-none scale-y-[-100%]">
-              <BackButton
-                tool={tool}
-                onClick={() => {
-                  // Going back from GroupConfirm should clear confirmation
-                  if (onUnconfirm) {
-                    onUnconfirm(body.id);
-                  }
-                  updateViewState('groupSearch');
-                }}
-              />
+          {/* Back button in top-left, matching Figma design - only show when there are unconfirmed users */}
+          {/* Hide back button if this phone is in a confirmed group (all users have confirmed) */}
+          {(() => {
+            // Check if this phone is in a confirmed group
+            const isInConfirmedGroup = confirmedGroups
+              ? Array.from(confirmedGroups.values()).some(group => group.memberIds.has(body.id))
+              : false;
+            
+            // Show back button only if there are unconfirmed users AND phone is not in a confirmed group
+            return unconfirmedNearbyPhones.length > 0 && !isInConfirmedGroup;
+          })() && (
+            <div
+              className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]"
+              style={{
+                zIndex: 7,
+                willChange: 'transform, opacity',
+                animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both',
+              }}
+            >
+              <div className="flex-none scale-y-[-100%]">
+                <BackButton
+                  tool={tool}
+                  onClick={() => {
+                    // Going back from GroupConfirm should clear confirmation
+                    if (onUnconfirm) {
+                      onUnconfirm(body.id);
+                    }
+                    updateViewState('groupSearch');
+                  }}
+                />
+              </div>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Swipeable home bar for groupConfirm - positioned outside transformed container */}
+      {viewState === 'groupConfirm' && (
+        <div
+          onMouseDown={handleSwipeStart}
+          onTouchStart={handleSwipeStart}
+          style={{
+            position: 'absolute',
+            bottom: '0',
+            left: '0',
+            right: '0',
+            height: '40px',
+            cursor: 'grab',
+            pointerEvents: 'auto',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'flex-end',
+            justifyContent: 'center',
+            paddingBottom: '6px',
+          }}
+        >
+          <div style={{ width: '110px', height: '3.5px' }}>
+            <HomeIndicator />
           </div>
-        </>
+        </div>
       )}
     </div>
   );
@@ -1102,6 +1201,8 @@ export function PhoneWithProximity({
   confirmedPhones,
   groupSearchOpenPhones,
   onGroupSearchStateChange,
+  confirmedGroups,
+  potentialGroups,
 }: PhoneWithProximityProps) {
   return (
     <div className="relative size-full bg-black" data-name="PhoneWithProximity">
@@ -1115,6 +1216,8 @@ export function PhoneWithProximity({
         confirmedPhones={confirmedPhones}
         groupSearchOpenPhones={groupSearchOpenPhones}
         onGroupSearchStateChange={onGroupSearchStateChange}
+        confirmedGroups={confirmedGroups}
+        potentialGroups={potentialGroups}
       />
       <Bezel />
     </div>
