@@ -35,6 +35,9 @@ interface PhoneWithProximityProps {
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
   confirmedGroups?: Map<string, ConfirmedGroup>; // Confirmed groups to get all members when group is confirmed
   potentialGroups?: Map<string, PotentialGroup>; // Potential groups to get unconfirmed members
+  onStateChange?: (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => void;
+  onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void; // Callback to remove a user from potential group
+  isRecentlyRemoved?: boolean; // Flag to suppress notifications for recently removed users
 }
 
 function Container() {
@@ -168,6 +171,8 @@ function Screen({
   confirmedGroups,
   potentialGroups,
   onStateChange,
+  onRemoveUser,
+  isRecentlyRemoved,
 }: {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -181,6 +186,8 @@ function Screen({
   confirmedGroups?: Map<string, ConfirmedGroup>;
   potentialGroups?: Map<string, PotentialGroup>;
   onStateChange?: (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => void;
+  onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void;
+  isRecentlyRemoved?: boolean;
 }) {
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
@@ -200,6 +207,12 @@ function Screen({
   const [isConfirmSwiping, setIsConfirmSwiping] = useState(false);
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
+  
+  // Swipe-to-remove state
+  const [swipedUser, setSwipedUser] = useState<number | null>(null);
+  const [swipeRemoveOffset, setSwipeRemoveOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const swipeRemoveStartRef = useRef<{ x: number; y: number; targetUserId: number } | null>(null);
+  const currentSwipeRemoveDistanceRef = useRef(0);
 
   const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', groupId?: string | null) => {
     setViewState(nextState);
@@ -231,9 +244,10 @@ function Screen({
   }, [swipeOffset, viewState, onStateChange]);
   
   // Check if any phones are within 8.5cm
+  // Suppress notifications if this user was recently removed
   const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
   const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
-  const showNotification = hasNearbyPhones && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory');
+  const showNotification = hasNearbyPhones && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory') && !isRecentlyRemoved;
   
   // Handle message icon click to open groups history
   const handleMessageIconClick = () => {
@@ -488,6 +502,89 @@ function Screen({
     setIsConfirmSwiping(false);
   };
   
+  // Handle swipe-to-remove gesture on user icons
+  const handleUserSwipeStart = (e: React.MouseEvent | React.TouchEvent, targetUserId: number) => {
+    // Only allow on "swipe to confirm" screen (groupSearch view)
+    if (isTransitioning || tool !== 'interact' || viewState !== 'groupSearch') return;
+    // Don't allow removing yourself
+    if (targetUserId === body.id) return;
+    // Don't allow removing confirmed users
+    if (confirmedPhones?.has(targetUserId)) return;
+    
+    e.stopPropagation();
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    swipeRemoveStartRef.current = { x: clientX, y: clientY, targetUserId };
+    setSwipedUser(targetUserId);
+    setSwipeRemoveOffset({ x: 0, y: 0 });
+    currentSwipeRemoveDistanceRef.current = 0;
+    
+    // Add global listeners
+    if ('touches' in e) {
+      window.addEventListener('touchmove', handleUserSwipeMove as any);
+      window.addEventListener('touchend', handleUserSwipeEnd as any);
+    } else {
+      window.addEventListener('mousemove', handleUserSwipeMove as any);
+      window.addEventListener('mouseup', handleUserSwipeEnd as any);
+    }
+  };
+  
+  const handleUserSwipeMove = (e: MouseEvent | TouchEvent) => {
+    if (!swipeRemoveStartRef.current || isTransitioning) return;
+    
+    e.stopPropagation();
+    e.preventDefault();
+    const clientX = 'touches' in e ? (e as TouchEvent).touches[0].clientX : (e as MouseEvent).clientX;
+    const clientY = 'touches' in e ? (e as TouchEvent).touches[0].clientY : (e as MouseEvent).clientY;
+    
+    // Calculate screen-space delta
+    const screenDeltaX = clientX - swipeRemoveStartRef.current.x;
+    const screenDeltaY = clientY - swipeRemoveStartRef.current.y;
+    
+    // Transform delta to phone-local space using phone's rotation
+    const rotation = body.rotation;
+    const cos = Math.cos(-rotation);
+    const sin = Math.sin(-rotation);
+    
+    // Rotate the delta vector
+    const localDeltaX = screenDeltaX * cos - screenDeltaY * sin;
+    const localDeltaY = screenDeltaX * sin + screenDeltaY * cos;
+    
+    // Update visual offset
+    setSwipeRemoveOffset({ x: localDeltaX, y: localDeltaY });
+    
+    // Calculate distance for threshold
+    const distance = Math.sqrt(localDeltaX * localDeltaX + localDeltaY * localDeltaY);
+    currentSwipeRemoveDistanceRef.current = distance;
+  };
+  
+  const handleUserSwipeEnd = (e: MouseEvent | TouchEvent) => {
+    if (isTransitioning) return;
+    e.stopPropagation();
+    e.preventDefault();
+    
+    // Remove global listeners
+    window.removeEventListener('mousemove', handleUserSwipeMove as any);
+    window.removeEventListener('mouseup', handleUserSwipeEnd as any);
+    window.removeEventListener('touchmove', handleUserSwipeMove as any);
+    window.removeEventListener('touchend', handleUserSwipeEnd as any);
+    
+    const finalDistance = currentSwipeRemoveDistanceRef.current;
+    const targetUserId = swipeRemoveStartRef.current?.targetUserId;
+    
+    // If swiped past 30px threshold, remove the user (reduced for easier removal within screen)
+    if (finalDistance > 30 && targetUserId && onRemoveUser) {
+      onRemoveUser(body.id, targetUserId);
+    }
+    
+    // Reset state
+    swipeRemoveStartRef.current = null;
+    setSwipedUser(null);
+    setSwipeRemoveOffset({ x: 0, y: 0 });
+    currentSwipeRemoveDistanceRef.current = 0;
+  };
+  
   // Get nearby phones within range
   const nearbyPhones = proximityData
     .filter(data => data.distanceCm <= 8.5)
@@ -687,6 +784,85 @@ function Screen({
       }
     }
   }, [activeGroupId, potentialGroups, confirmedGroups]);
+  
+  // Detect when phone is removed from a potential group and reset to home screen
+  const prevInPotentialGroupRef = useRef(!!phonePotentialGroup);
+  const prevHasNearbyPhonesRef = useRef(hasNearbyPhones);
+  
+  // Track previous isRecentlyRemoved to detect when it becomes true
+  const prevIsRecentlyRemovedRef = useRef(isRecentlyRemoved);
+  
+  // Sync viewState with groupSearchOpenPhones - if removed from groupSearchOpenPhones, reset to homeScreen
+  // This ensures that when a user is removed, their view state resets immediately
+  const prevInGroupSearchRef = useRef(groupSearchOpenPhones?.has(body.id) ?? false);
+  useEffect(() => {
+    const isInGroupSearch = groupSearchOpenPhones?.has(body.id) ?? false;
+    const wasInGroupSearch = prevInGroupSearchRef.current;
+    prevInGroupSearchRef.current = isInGroupSearch;
+    
+    // If user is removed from groupSearchOpenPhones and they're not in a confirmed group,
+    // reset to home screen (unless they're already there)
+    // This helps ensure the removed user returns to zero state immediately
+    if (wasInGroupSearch && !isInGroupSearch && !phoneConfirmedGroup && viewState !== 'homeScreen') {
+      // Only reset if we're not already at homeScreen
+      if (viewState === 'groupSearch' || viewState === 'groupConfirm') {
+        updateViewState('homeScreen');
+      }
+    }
+  }, [groupSearchOpenPhones, phoneConfirmedGroup, viewState, body.id]);
+  
+  useEffect(() => {
+    const wasInPotentialGroup = prevInPotentialGroupRef.current;
+    const isInPotentialGroup = !!phonePotentialGroup;
+    prevInPotentialGroupRef.current = isInPotentialGroup;
+    
+    // If phone was in a potential group but is no longer, and they're not in a confirmed group,
+    // reset to home screen (unless they're already there)
+    // IMPORTANT: If this user was recently removed, always reset to home screen
+    // If the group was completely deleted (only one user remains), both users return to home screen
+    if (wasInPotentialGroup && !isInPotentialGroup && !phoneConfirmedGroup && viewState !== 'homeScreen') {
+      // Both removed users and removers should return to home screen when group is deleted
+      updateViewState('homeScreen');
+    }
+    
+    // Also ensure that if user is recently removed and not in a potential group, they're at home screen
+    // This handles the case where the group is deleted and the removed user needs to reset
+    if (isRecentlyRemoved && !isInPotentialGroup && !phoneConfirmedGroup && viewState !== 'homeScreen') {
+      updateViewState('homeScreen');
+    }
+    
+    // If user just became recently removed, immediately reset to home screen
+    // This ensures the removed user returns to zero state right away
+    // Reset regardless of current view state to ensure they're at home screen
+    const wasRecentlyRemoved = prevIsRecentlyRemovedRef.current;
+    prevIsRecentlyRemovedRef.current = isRecentlyRemoved;
+    
+    if (!wasRecentlyRemoved && isRecentlyRemoved && !phoneConfirmedGroup) {
+      // Always reset to home screen when user becomes recently removed
+      // This ensures the removed user returns to zero state immediately
+      updateViewState('homeScreen');
+    }
+    
+    // Also ensure that if user is currently recently removed, they stay at home screen
+    // This handles any edge cases where the view state might not have reset
+    if (isRecentlyRemoved && !phoneConfirmedGroup && viewState !== 'homeScreen') {
+      updateViewState('homeScreen');
+    }
+  }, [phonePotentialGroup, phoneConfirmedGroup, viewState, isRecentlyRemoved]);
+  
+  // Clear "recently removed" flag when user moves away from proximity
+  // This allows them to see notifications again when they return
+  useEffect(() => {
+    const hadNearbyPhones = prevHasNearbyPhonesRef.current;
+    prevHasNearbyPhonesRef.current = hasNearbyPhones;
+    
+    // If user was in proximity but is no longer, clear the recently removed flag
+    // This happens when they move away, allowing notifications to show again when they return
+    if (hadNearbyPhones && !hasNearbyPhones && isRecentlyRemoved && onGroupSearchStateChange) {
+      // The flag will be cleared by the parent component when proximity is lost
+      // For now, we rely on the timeout in Desktop1.tsx
+    }
+  }, [hasNearbyPhones, isRecentlyRemoved, onGroupSearchStateChange]);
   
   return (
     <div 
@@ -919,7 +1095,7 @@ function Screen({
                     >
                       <img
                         alt=""
-                        className="absolute inset-0 max-w-none object-cover size-full"
+                        className="absolute inset-0 max-w-none object-cover size-full pointer-events-none"
                         src={user.profileImage}
                       />
                     </div>
@@ -931,7 +1107,15 @@ function Screen({
               Hidden in groupConfirm so they no longer track and instead appear
               only in the bottom cluster UI. */}
           {viewState !== 'groupConfirm' && (() => {
-            const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+            let nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+            
+            // In groupSearch view, show all nearby users who are in proximity
+            // The group membership filter was too restrictive - it prevented new users
+            // (like a third phone) from appearing even when they're in proximity
+            // The updatePotentialGroups function will add all nearby users to the group,
+            // so we should show all users in proximity, not just those already in the group
+            // Removed users are already filtered out by calculateProximityData (recentlyRemovedPhones check)
+            // So we don't need the group membership filter here
 
             if (nearbyWithinRange.length === 0) return null;
 
@@ -1070,9 +1254,22 @@ function Screen({
 
             return layoutEntries.map((entry, index) => {
               const isHome = viewState === 'homeScreen';
+              const isGroupSearch = viewState === 'groupSearch';
               const x = isHome ? notifXs[index] : fullXs[index];
               const y = isHome ? notifYs[index] : fullYs[index];
               const size = isHome ? notificationSize : fullSizes[index];
+              
+              // Check if this user is confirmed (should not be swipeable)
+              const isConfirmed = confirmedPhones?.has(entry.phoneId);
+              const isBeingSwiped = swipedUser === entry.phoneId;
+              const swipeOffsetForUser = isBeingSwiped ? swipeRemoveOffset : { x: 0, y: 0 };
+              const opacity = isBeingSwiped ? Math.max(0, 1 - currentSwipeRemoveDistanceRef.current / 100) : 1;
+              
+              // Only allow swiping unconfirmed users in groupSearch view
+              const isSwipeable = isGroupSearch && !isConfirmed && tool === 'interact';
+
+              const scale = isBeingSwiped ? Math.max(0.5, 1 - currentSwipeRemoveDistanceRef.current / 200) : 1;
+              const transformValue = `translate(-50%, -50%) translate(${x + swipeOffsetForUser.x}px, ${y + swipeOffsetForUser.y}px) scale(${scale})`;
 
               return (
                 <div
@@ -1081,15 +1278,21 @@ function Screen({
                     position: 'absolute',
                     left: '50%',
                     top: topOffset,
-                    transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                    transform: transformValue,
                     width: `${size}px`,
                     height: `${size}px`,
                     borderRadius: isHome ? '50%' : `${size / 2}px`,
-                    willChange: 'transform, width, height',
-                    transition: `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}`,
+                    willChange: 'transform, width, height, opacity',
+                    transition: isBeingSwiped ? 'none' : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
                     overflow: 'hidden',
                     backgroundColor: 'white',
+                    opacity,
+                    cursor: isSwipeable ? 'grab' : 'default',
+                    pointerEvents: 'auto',
+                    zIndex: isBeingSwiped ? 10 : 1,
                   }}
+                  onMouseDown={isSwipeable ? (e) => handleUserSwipeStart(e, entry.phoneId) : undefined}
+                  onTouchStart={isSwipeable ? (e) => handleUserSwipeStart(e, entry.phoneId) : undefined}
                 >
                   <img
                     alt=""
@@ -1303,7 +1506,7 @@ function Screen({
                   >
                     <img 
                       alt="" 
-                      className="absolute inset-0 max-w-none object-cover size-full" 
+                      className="absolute inset-0 max-w-none object-cover size-full pointer-events-none" 
                       src={user.profileImage} 
                     />
                   </div>
@@ -1819,6 +2022,8 @@ export function PhoneWithProximity({
   onGroupSearchStateChange,
   confirmedGroups,
   potentialGroups,
+  onRemoveUser,
+  isRecentlyRemoved,
 }: PhoneWithProximityProps) {
   const [screenViewState, setScreenViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
   const [screenSwipeOffset, setScreenSwipeOffset] = useState(0);
@@ -1878,6 +2083,8 @@ export function PhoneWithProximity({
           confirmedGroups={confirmedGroups}
           potentialGroups={potentialGroups}
           onStateChange={handleStateChange}
+          onRemoveUser={onRemoveUser}
+          isRecentlyRemoved={isRecentlyRemoved}
         />
       </div>
       <Bezel />
