@@ -38,6 +38,7 @@ interface PhoneWithProximityProps {
   onStateChange?: (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => void;
   onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void; // Callback to remove a user from potential group
   isRecentlyRemoved?: boolean; // Flag to suppress notifications for recently removed users
+  recentlyRemovedPhones?: Set<number>; // Set of recently removed phone IDs to filter out from display
 }
 
 function Container() {
@@ -173,6 +174,7 @@ function Screen({
   onStateChange,
   onRemoveUser,
   isRecentlyRemoved,
+  recentlyRemovedPhones,
 }: {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -188,6 +190,7 @@ function Screen({
   onStateChange?: (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => void;
   onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void;
   isRecentlyRemoved?: boolean;
+  recentlyRemovedPhones?: Set<number>;
 }) {
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
@@ -586,8 +589,9 @@ function Screen({
   };
   
   // Get nearby phones within range
+  // Filter out recently removed users to ensure they don't appear anywhere
   const nearbyPhones = proximityData
-    .filter(data => data.distanceCm <= 8.5)
+    .filter(data => data.distanceCm <= 8.5 && !recentlyRemovedPhones?.has(data.phoneId))
     .map(data => allBodies.find(b => b.id === data.phoneId))
     .filter((phone): phone is RigidBody => phone !== undefined);
   
@@ -604,6 +608,7 @@ function Screen({
     ? Array.from(confirmedGroups.values()).find(group => group.memberIds.has(body.id))
     : undefined;
   
+<<<<<<< HEAD
   // Priority logic: Each group has its own unique screen instance
   // 1. If viewing a specific confirmed group's screen (activeGroupId matches): lock to that confirmed group view
   // 2. If viewing a specific potential group's screen (activeGroupId matches): show that potential group view
@@ -700,14 +705,35 @@ function Screen({
               ? [body, ...confirmedNearbyPhones] 
               : confirmedNearbyPhones;
   
+  // Filter out recently removed phones from allConfirmedPhones
+  const allConfirmedPhonesFiltered = allConfirmedPhones.filter(phone => !recentlyRemovedPhones?.has(phone.id));
+  
+  // Get unconfirmed phones: if in a potential group, get members who haven't confirmed;
+  // otherwise, use proximity-based unconfirmed phones
+  // Filter out recently removed users so their icons don't appear on any device
+  const unconfirmedNearbyPhones = phonePotentialGroup
+    ? Array.from(phonePotentialGroup.memberIds)
+        .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id && !recentlyRemovedPhones?.has(id))
+        .map(id => allBodies.find(b => b.id === id))
+        .filter((phone): phone is RigidBody => phone !== undefined)
+    : nearbyPhones.filter(phone => {
+        const isConfirmed = confirmedPhones?.has(phone.id);
+        const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
+        const isRemoved = recentlyRemovedPhones?.has(phone.id);
+        return !isConfirmed && isInGroupSearch && !isRemoved;
+      });
+  
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
-  // Prioritize potential group: if in a potential group, show that; otherwise show confirmed group if it exists
-  const shouldShowUnifiedView = hasNearbyPhones || 
+  // But hide it completely if user was recently removed (they should be in zero state with no notification)
+  // Explicitly check that isRecentlyRemoved is not true to ensure the notification overlay is completely removed
+  const shouldShowUnifiedView = (isRecentlyRemoved !== true) && (
+    hasNearbyPhones || 
     phonePotentialGroup ||
     phoneConfirmedGroup ||
     (viewState === 'groupConfirm' && (phonePotentialGroup || phoneConfirmedGroup)) ||
-    (viewState === 'groupSearch' && phonePotentialGroup);
-  const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
+    (viewState === 'groupSearch' && phonePotentialGroup)
+  );
+  const extraConfirmedPhones = allConfirmedPhonesFiltered.filter(phone => phone.id !== body.id);
   const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
   const notificationHeight = '140px';
   const isHomeNotification = viewState === 'homeScreen';
@@ -800,6 +826,15 @@ function Screen({
     const wasInGroupSearch = prevInGroupSearchRef.current;
     prevInGroupSearchRef.current = isInGroupSearch;
     
+    // Check if user has confirmed (is in confirmedPhones or has confirmed in potential group)
+    const isConfirmed = confirmedPhones?.has(body.id) || phonePotentialGroup?.confirmedIds.has(body.id);
+    
+    // Don't reset viewState if user is in groupConfirm state and has confirmed
+    // This prevents the swipe-to-confirm transition from being interrupted
+    if (viewState === 'groupConfirm' && isConfirmed) {
+      return;
+    }
+    
     // If user is removed from groupSearchOpenPhones and they're not in a confirmed group,
     // reset to home screen (unless they're already there)
     // This helps ensure the removed user returns to zero state immediately
@@ -809,12 +844,21 @@ function Screen({
         updateViewState('homeScreen');
       }
     }
-  }, [groupSearchOpenPhones, phoneConfirmedGroup, viewState, body.id]);
+  }, [groupSearchOpenPhones, phoneConfirmedGroup, viewState, body.id, confirmedPhones, phonePotentialGroup]);
   
   useEffect(() => {
     const wasInPotentialGroup = prevInPotentialGroupRef.current;
     const isInPotentialGroup = !!phonePotentialGroup;
     prevInPotentialGroupRef.current = isInPotentialGroup;
+    
+    // Check if user has confirmed (is in confirmedPhones or has confirmed in potential group)
+    const isConfirmed = confirmedPhones?.has(body.id) || phonePotentialGroup?.confirmedIds.has(body.id);
+    
+    // Don't reset viewState if user is in groupConfirm state and has confirmed
+    // This prevents the swipe-to-confirm transition from being interrupted
+    if (viewState === 'groupConfirm' && isConfirmed) {
+      return;
+    }
     
     // If phone was in a potential group but is no longer, and they're not in a confirmed group,
     // reset to home screen (unless they're already there)
@@ -848,7 +892,7 @@ function Screen({
     if (isRecentlyRemoved && !phoneConfirmedGroup && viewState !== 'homeScreen') {
       updateViewState('homeScreen');
     }
-  }, [phonePotentialGroup, phoneConfirmedGroup, viewState, isRecentlyRemoved]);
+  }, [phonePotentialGroup, phoneConfirmedGroup, viewState, isRecentlyRemoved, confirmedPhones, body.id]);
   
   // Clear "recently removed" flag when user moves away from proximity
   // This allows them to see notifications again when they return
@@ -938,6 +982,7 @@ function Screen({
       )}
       
       {/* Unified view that morphs between homeScreen notification, groupSearch, and groupConfirm */}
+      {/* This is hidden when isRecentlyRemoved is true (handled in shouldShowUnifiedView condition) */}
       {shouldShowUnifiedView && (
         <div
           onClick={viewState === 'homeScreen' ? handleNotificationClick : undefined}
@@ -1038,8 +1083,8 @@ function Screen({
 
               {/* All confirmed users filling the gray circle in groupConfirm */}
               {viewState === 'groupConfirm' &&
-                allConfirmedPhones.map((user, index) => {
-                  const totalCircles = allConfirmedPhones.length;
+                allConfirmedPhonesFiltered.map((user, index) => {
+                  const totalCircles = allConfirmedPhonesFiltered.length;
                   const centerX = 24; // center of 48px container
                   const centerY = 24;
                   const containerRadius = 24;
@@ -1107,15 +1152,17 @@ function Screen({
               Hidden in groupConfirm so they no longer track and instead appear
               only in the bottom cluster UI. */}
           {viewState !== 'groupConfirm' && (() => {
-            let nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+            // Filter out recently removed users immediately to ensure they don't appear on any device
+            let nearbyWithinRange = proximityData
+              .filter(data => data.distanceCm <= 8.5)
+              .filter(data => !recentlyRemovedPhones?.has(data.phoneId));
             
             // In groupSearch view, show all nearby users who are in proximity
             // The group membership filter was too restrictive - it prevented new users
             // (like a third phone) from appearing even when they're in proximity
             // The updatePotentialGroups function will add all nearby users to the group,
             // so we should show all users in proximity, not just those already in the group
-            // Removed users are already filtered out by calculateProximityData (recentlyRemovedPhones check)
-            // So we don't need the group membership filter here
+            // Removed users are filtered out here to ensure they don't appear on any device
 
             if (nearbyWithinRange.length === 0) return null;
 
@@ -2024,6 +2071,7 @@ export function PhoneWithProximity({
   potentialGroups,
   onRemoveUser,
   isRecentlyRemoved,
+  recentlyRemovedPhones,
 }: PhoneWithProximityProps) {
   const [screenViewState, setScreenViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
   const [screenSwipeOffset, setScreenSwipeOffset] = useState(0);
@@ -2038,6 +2086,7 @@ export function PhoneWithProximity({
   const shouldShowUnderneathHomeScreen = screenSwipeOffset > 0 && screenViewState !== 'homeScreen';
 
   return (
+<<<<<<< HEAD
     <div 
       className="relative size-full bg-black" 
       data-name="PhoneWithProximity"
@@ -2085,6 +2134,7 @@ export function PhoneWithProximity({
           onStateChange={handleStateChange}
           onRemoveUser={onRemoveUser}
           isRecentlyRemoved={isRecentlyRemoved}
+          recentlyRemovedPhones={recentlyRemovedPhones}
         />
       </div>
       <Bezel />
