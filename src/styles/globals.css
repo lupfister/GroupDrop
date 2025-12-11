@@ -243,3 +243,25 @@ html {
     opacity: 1;
   }
 }
+
+/* View Transitions for Messages Icon to Groups History */
+/* The icon and screen share the same view-transition-name so they morph into each other */
+/* The browser automatically handles the size/position interpolation between the two states */
+
+/* Configure the view transition group - this controls the morphing container */
+::view-transition-group(messages-icon) {
+  animation-duration: 0.5s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Configure the old element (what's leaving) */
+::view-transition-old(messages-icon) {
+  animation-duration: 0.5s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Configure the new element (what's entering) */
+::view-transition-new(messages-icon) {
+  animation-duration: 0.5s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}

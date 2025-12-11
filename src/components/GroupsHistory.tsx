@@ -90,7 +90,7 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool }: Grou
   }, [groupsArray.length]);
   
   return (
-    <div className="bg-black overflow-clip relative size-full" data-name="GroupsHistory" style={{ borderRadius: '24px', willChange: 'opacity, transform' }}>
+    <div className="bg-black overflow-clip relative size-full" data-name="GroupsHistory" style={{ borderRadius: '24px', willChange: 'opacity, transform', viewTransitionName: 'messages-icon' }}>
       {/* Back button */}
       <div className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]" style={{ willChange: 'transform, opacity', animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both' }}>
         <div className="flex-none scale-y-[-100%]">
@@ -207,7 +207,6 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool }: Grou
         )}
       </div>
       
-      <HomeIndicator />
       <StatusBar />
     </div>
   );

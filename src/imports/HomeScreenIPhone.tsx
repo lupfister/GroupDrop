@@ -498,7 +498,10 @@ function Icon19({ onClick }: { onClick?: () => void }) {
       className="relative shrink-0 size-[49.353px] cursor-pointer" 
       data-name="Icon"
       onClick={onClick}
-      style={{ pointerEvents: 'auto' }}
+      style={{ 
+        pointerEvents: 'auto',
+        viewTransitionName: 'messages-icon'
+      }}
     >
       <img alt="" className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full" src={imgIcon18} />
     </div>

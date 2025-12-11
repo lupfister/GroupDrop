@@ -128,7 +128,7 @@ function Bezel() {
 export default function Desktop() {
   const [phones, setPhones] = useState(1);
   const [, forceUpdate] = useState(0);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.5);
   const [tool, setTool] = useState<Tool>('move');
   const [confirmedPhones, setConfirmedPhones] = useState<Set<number>>(new Set());
   const [groupSearchOpenPhones, setGroupSearchOpenPhones] = useState<Set<number>>(new Set());
@@ -136,6 +136,7 @@ export default function Desktop() {
   const [confirmedGroups, setConfirmedGroups] = useState<Map<string, ConfirmedGroup>>(new Map());
   const [showDebugMenu, setShowDebugMenu] = useState(true);
   const nextGroupIdRef = useRef(1);
+  const nextConfirmedGroupIdRef = useRef(1);
   const potentialGroupsRef = useRef<Map<string, PotentialGroup>>(new Map());
   const confirmedGroupsRef = useRef<Map<string, ConfirmedGroup>>(new Map());
   
@@ -182,7 +183,7 @@ export default function Desktop() {
   }, [panX, panY]);
   
   // Physics bodies
-  const nextIdRef = useRef(2);
+  const nextIdRef = useRef(3);
   const canvasRef = useRef<HTMLDivElement>(null);
   const pinchStartRef = useRef({ distance: 0, zoom: 1 });
   const lastTimeRef = useRef(Date.now());
@@ -215,15 +216,16 @@ export default function Desktop() {
     };
   }, []);
 
-  // Initialize first phone
+  // Initialize default phones (2 phones)
   useEffect(() => {
     if (bodiesRef.current.length === 0) {
       const viewportWidth = window.innerWidth / zoom;
       const viewportHeight = window.innerHeight / zoom;
       
-      const initialBody: RigidBody = {
+      // First phone - centered
+      const initialBody1: RigidBody = {
         id: 1,
-        x: viewportWidth / 2 - phoneWidth / 2,
+        x: viewportWidth / 2 - phoneWidth / 2 - 200,
         y: viewportHeight / 2 - phoneHeight / 2,
         rotation: 0,
         vx: 0,
@@ -239,8 +241,28 @@ export default function Desktop() {
         profileImage: profileImages[1 % profileImages.length]
       };
       
-      bodiesRef.current.push(initialBody);
-      forceUpdate(prev => prev + 1); // Force re-render after adding initial phone
+      // Second phone - offset to the right
+      const initialBody2: RigidBody = {
+        id: 2,
+        x: viewportWidth / 2 - phoneWidth / 2 + 200,
+        y: viewportHeight / 2 - phoneHeight / 2,
+        rotation: 0,
+        vx: 0,
+        vy: 0,
+        angularVelocity: 0,
+        mass: 1,
+        momentOfInertia: calculateMomentOfInertia(1, phoneWidth, phoneHeight),
+        restitution: 0.5,
+        friction: 0.4,
+        width: phoneWidth,
+        height: phoneHeight,
+        isDragging: false,
+        profileImage: profileImages[2 % profileImages.length]
+      };
+      
+      bodiesRef.current.push(initialBody1);
+      bodiesRef.current.push(initialBody2);
+      forceUpdate(prev => prev + 1); // Force re-render after adding initial phones
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
@@ -735,11 +757,15 @@ export default function Desktop() {
           const groupId = existingGroupId || `potential-${nextGroupIdRef.current++}`;
           const existingGroup = potentialGroupsRef.current.get(groupId);
           
-          // Only preserve confirmedIds if exact same members are still in proximity
+          // Only preserve confirmedIds if exact same members are still in proximity AND member set hasn't changed
+          const memberSetUnchanged = existingGroup && 
+            existingGroup.memberIds.size === component.size &&
+            Array.from(existingGroup.memberIds).every(id => component.has(id));
+          
           newGroups.set(groupId, {
             id: groupId,
             memberIds: new Set(component),
-            confirmedIds: existingGroup && areMembersInProximity(existingGroup.memberIds) 
+            confirmedIds: existingGroup && memberSetUnchanged && areMembersInProximity(existingGroup.memberIds) 
               ? new Set(existingGroup.confirmedIds) 
               : new Set(),
           });
@@ -783,11 +809,14 @@ export default function Desktop() {
       const allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
       
       if (allConfirmed && group.memberIds.size >= 2) {
-        // Move to confirmed groups
+        // Generate a new sequential ID for confirmed groups (e.g., "1", "2", "3")
+        const confirmedGroupId = String(nextConfirmedGroupIdRef.current++);
+        
+        // Move to confirmed groups with new sequential ID
         setConfirmedGroups(prev => {
           const next = new Map(prev);
-          next.set(groupId, {
-            id: groupId,
+          next.set(confirmedGroupId, {
+            id: confirmedGroupId,
             memberIds: new Set(group.memberIds),
           });
           return next;
@@ -1001,7 +1030,7 @@ export default function Desktop() {
                           color: '#000000',
                           marginBottom: '8px'
                         }}>
-                          Group{groupId}
+                          Group {groupId}
                         </div>
                         <div style={{ 
                           display: 'flex', 
