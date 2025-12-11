@@ -1353,10 +1353,6 @@ export default function Desktop() {
                   </div>
                 )}
               </div>
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 36db91d (fixed rejoining function)
               
               {/* Recently Removed Phones */}
               <div>
@@ -1480,6 +1476,7 @@ export default function Desktop() {
                 potentialGroups={potentialGroups}
                 onRemoveUser={handleRemoveUser}
                 isRecentlyRemoved={recentlyRemovedPhones.has(body.id)}
+                recentlyRemovedPhones={recentlyRemovedPhones}
               />
             </DraggablePhone>
           ))}

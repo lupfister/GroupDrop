@@ -1020,6 +1020,7 @@ function Screen({
               }
             }}
             tool={tool}
+            recentlyRemovedPhones={recentlyRemovedPhones}
           />
         </div>
       )}
@@ -1168,8 +1169,7 @@ function Screen({
                   
                   return usersToDisplay.map((user, index) => {
                     const totalCircles = usersToDisplay.length;
->>>>>>> 7515cc8 (updated logic for confirming phones and potential group database)
-                  const centerX = 24; // center of 48px container
+                    const centerX = 24; // center of 48px container
                   const centerY = 24;
                   const containerRadius = 24;
                   // Slightly smaller radius so circles can be larger and closer together
@@ -2171,7 +2171,6 @@ export function PhoneWithProximity({
   const shouldShowUnderneathHomeScreen = screenSwipeOffset > 0 && screenViewState !== 'homeScreen';
 
   return (
-<<<<<<< HEAD
     <div 
       className="relative size-full bg-black" 
       data-name="PhoneWithProximity"
