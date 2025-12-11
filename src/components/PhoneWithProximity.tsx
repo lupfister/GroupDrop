@@ -183,6 +183,8 @@ function Screen({
   // groupSearch -> opened notification / scanning state
   // groupConfirm -> confirmation / group screen state
   const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm'>('homeScreen');
+  // Track which group's screen is currently being viewed (each group has its own unique screen)
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const swipeStartRef = useRef<{ y: number; time: number; x: number } | null>(null);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -193,8 +195,17 @@ function Screen({
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
 
-  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm') => {
+  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm', groupId?: string | null) => {
     setViewState(nextState);
+    // Update active group ID when entering a group screen
+    if (nextState === 'groupConfirm' && groupId) {
+      setActiveGroupId(groupId);
+    } else if (nextState === 'homeScreen') {
+      // Clear active group when going home (allows forming new groups)
+      setActiveGroupId(null);
+    } else if (nextState === 'groupSearch' && groupId) {
+      setActiveGroupId(groupId);
+    }
     if (onGroupSearchStateChange) {
       onGroupSearchStateChange(body.id, nextState === 'groupSearch');
     }
@@ -220,8 +231,11 @@ function Screen({
     e.stopPropagation();
     console.log('Expanding notification to full view');
     
-    // Open GroupSearch state
-    updateViewState('groupSearch');
+    // Open GroupSearch state - use potential group ID if available
+    const currentPotentialGroup = potentialGroups 
+      ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+      : undefined;
+    updateViewState('groupSearch', currentPotentialGroup?.id || null);
   };
   
   // Handle swipe up gesture on home bar - use global mouse tracking
@@ -419,8 +433,11 @@ function Screen({
         onConfirm(body.id);
       }
       
-      // Transition to GroupConfirm state
-      updateViewState('groupConfirm');
+      // Transition to GroupConfirm state - use potential group ID (the group being confirmed)
+      const currentPotentialGroup = potentialGroups 
+        ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+        : undefined;
+      updateViewState('groupConfirm', currentPotentialGroup?.id || null);
       setIsTransitioning(false);
       
       // Reset visual offset once transition is done
@@ -456,32 +473,91 @@ function Screen({
     ? Array.from(confirmedGroups.values()).find(group => group.memberIds.has(body.id))
     : undefined;
   
-  // Get unconfirmed phones: if in a potential group, get members who haven't confirmed;
-  // otherwise, use proximity-based unconfirmed phones
-  const unconfirmedNearbyPhones = phonePotentialGroup
-    ? Array.from(phonePotentialGroup.memberIds)
-        .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
-        .map(id => allBodies.find(b => b.id === id))
-        .filter((phone): phone is RigidBody => phone !== undefined)
-    : nearbyPhones.filter(phone => {
-        const isConfirmed = confirmedPhones?.has(phone.id);
-        const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
-        return !isConfirmed && isInGroupSearch;
-      });
+  // Priority logic: Each group has its own unique screen instance
+  // 1. If viewing a specific confirmed group's screen (activeGroupId matches): lock to that confirmed group view
+  // 2. If viewing a specific potential group's screen (activeGroupId matches): show that potential group view
+  // 3. If in a potential group that phone has confirmed in (and not viewing another group): show potential group state
+  // 4. Otherwise, if in a confirmed group (and not viewing another group): show confirmed group state
+  // 5. Otherwise: use proximity-based state
   
-  // Get all confirmed phones: if in a confirmed group, get all group members;
-  // otherwise, use proximity-based confirmed phones
-  const allConfirmedPhones = phoneConfirmedGroup
-    ? Array.from(phoneConfirmedGroup.memberIds)
+  // Find which confirmed group matches the active group ID being viewed
+  const activeConfirmedGroup = activeGroupId && phoneConfirmedGroup && phoneConfirmedGroup.id === activeGroupId
+    ? phoneConfirmedGroup
+    : null;
+  
+  // Find which potential group matches the active group ID being viewed
+  const activePotentialGroup = activeGroupId && phonePotentialGroup && phonePotentialGroup.id === activeGroupId
+    ? phonePotentialGroup
+    : null;
+  
+  // Check if currently viewing a specific group's screen
+  const isViewingSpecificGroup = activeGroupId !== null;
+  const isViewingConfirmedGroupScreen = isViewingSpecificGroup && activeConfirmedGroup !== null;
+  const isViewingPotentialGroupScreen = isViewingSpecificGroup && activePotentialGroup !== null;
+  
+  // Check if phone has confirmed in a potential group (new group being formed)
+  const hasConfirmedInPotentialGroup = phonePotentialGroup && phonePotentialGroup.confirmedIds.has(body.id);
+  
+  // Get unconfirmed phones: show based on which group's screen is active
+  const unconfirmedNearbyPhones = isViewingConfirmedGroupScreen
+    ? [] // Viewing a confirmed group's screen: don't show any "Waiting for Others..."
+    : isViewingPotentialGroupScreen
+      ? Array.from(activePotentialGroup.memberIds)
+          .filter(id => !activePotentialGroup.confirmedIds.has(id) && id !== body.id)
+          .map(id => allBodies.find(b => b.id === id))
+          .filter((phone): phone is RigidBody => phone !== undefined)
+      : hasConfirmedInPotentialGroup && !isViewingSpecificGroup
+        ? Array.from(phonePotentialGroup.memberIds)
+            .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
+            .map(id => allBodies.find(b => b.id === id))
+            .filter((phone): phone is RigidBody => phone !== undefined)
+        : phonePotentialGroup && !isViewingSpecificGroup
+          ? Array.from(phonePotentialGroup.memberIds)
+              .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
+              .map(id => allBodies.find(b => b.id === id))
+              .filter((phone): phone is RigidBody => phone !== undefined)
+          : phoneConfirmedGroup && !isViewingSpecificGroup
+            ? [] // Fully confirmed group (no active potential group): don't show any "Waiting for Others..."
+            : nearbyPhones.filter(phone => {
+                const isConfirmed = confirmedPhones?.has(phone.id);
+                const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
+                return !isConfirmed && isInGroupSearch;
+              });
+  
+  // Get all confirmed phones: show based on which group's screen is active
+  const allConfirmedPhones = isViewingConfirmedGroupScreen
+    ? Array.from(activeConfirmedGroup.memberIds)
         .map(id => allBodies.find(b => b.id === id))
         .filter((phone): phone is RigidBody => phone !== undefined)
-    : confirmedPhones?.has(body.id) 
-      ? [body, ...confirmedNearbyPhones] 
-      : confirmedNearbyPhones;
+    : isViewingPotentialGroupScreen
+      ? Array.from(activePotentialGroup.memberIds)
+          .filter(id => activePotentialGroup.confirmedIds.has(id))
+          .map(id => allBodies.find(b => b.id === id))
+          .filter((phone): phone is RigidBody => phone !== undefined)
+      : hasConfirmedInPotentialGroup && !isViewingSpecificGroup
+        ? Array.from(phonePotentialGroup.memberIds)
+            .filter(id => phonePotentialGroup.confirmedIds.has(id))
+            .map(id => allBodies.find(b => b.id === id))
+            .filter((phone): phone is RigidBody => phone !== undefined)
+        : phonePotentialGroup && !isViewingSpecificGroup
+          ? Array.from(phonePotentialGroup.memberIds)
+              .filter(id => phonePotentialGroup.confirmedIds.has(id))
+              .map(id => allBodies.find(b => b.id === id))
+              .filter((phone): phone is RigidBody => phone !== undefined)
+          : phoneConfirmedGroup && !isViewingSpecificGroup
+            ? Array.from(phoneConfirmedGroup.memberIds)
+                .map(id => allBodies.find(b => b.id === id))
+                .filter((phone): phone is RigidBody => phone !== undefined)
+            : confirmedPhones?.has(body.id) 
+              ? [body, ...confirmedNearbyPhones] 
+              : confirmedNearbyPhones;
   
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
+  // Prioritize potential group: if in a potential group, show that; otherwise show confirmed group if it exists
   const shouldShowUnifiedView = hasNearbyPhones || 
-    (viewState === 'groupConfirm' && (phoneConfirmedGroup || phonePotentialGroup)) ||
+    phonePotentialGroup ||
+    phoneConfirmedGroup ||
+    (viewState === 'groupConfirm' && (phonePotentialGroup || phoneConfirmedGroup)) ||
     (viewState === 'groupSearch' && phonePotentialGroup);
   const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
   const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
@@ -1142,10 +1218,19 @@ function Screen({
                   tool={tool}
                   onClick={() => {
                     // Going back from GroupConfirm should clear confirmation
-                    if (onUnconfirm) {
+                    // But only if not in a confirmed group (can't leave confirmed groups)
+                    const isInConfirmedGroup = confirmedGroups
+                      ? Array.from(confirmedGroups.values()).some(group => group.memberIds.has(body.id))
+                      : false;
+                    
+                    if (!isInConfirmedGroup && onUnconfirm) {
                       onUnconfirm(body.id);
                     }
-                    updateViewState('groupSearch');
+                    // Go back to groupSearch - use potential group ID if available
+                    const currentPotentialGroup = potentialGroups 
+                      ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+                      : undefined;
+                    updateViewState('groupSearch', currentPotentialGroup?.id || null);
                   }}
                 />
               </div>
