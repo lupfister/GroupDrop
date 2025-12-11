@@ -128,7 +128,7 @@ function Bezel() {
 export default function Desktop() {
   const [phones, setPhones] = useState(1);
   const [, forceUpdate] = useState(0);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.5);
   const [tool, setTool] = useState<Tool>('move');
   const [confirmedPhones, setConfirmedPhones] = useState<Set<number>>(new Set());
   const [groupSearchOpenPhones, setGroupSearchOpenPhones] = useState<Set<number>>(new Set());
@@ -136,6 +136,7 @@ export default function Desktop() {
   const [confirmedGroups, setConfirmedGroups] = useState<Map<string, ConfirmedGroup>>(new Map());
   const [showDebugMenu, setShowDebugMenu] = useState(true);
   const nextGroupIdRef = useRef(1);
+  const nextConfirmedGroupIdRef = useRef(1);
   const potentialGroupsRef = useRef<Map<string, PotentialGroup>>(new Map());
   const confirmedGroupsRef = useRef<Map<string, ConfirmedGroup>>(new Map());
   
@@ -182,7 +183,7 @@ export default function Desktop() {
   }, [panX, panY]);
   
   // Physics bodies
-  const nextIdRef = useRef(2);
+  const nextIdRef = useRef(3);
   const canvasRef = useRef<HTMLDivElement>(null);
   const pinchStartRef = useRef({ distance: 0, zoom: 1 });
   const lastTimeRef = useRef(Date.now());
@@ -215,15 +216,16 @@ export default function Desktop() {
     };
   }, []);
 
-  // Initialize first phone
+  // Initialize default phones (2 phones)
   useEffect(() => {
     if (bodiesRef.current.length === 0) {
       const viewportWidth = window.innerWidth / zoom;
       const viewportHeight = window.innerHeight / zoom;
       
-      const initialBody: RigidBody = {
+      // First phone - centered
+      const initialBody1: RigidBody = {
         id: 1,
-        x: viewportWidth / 2 - phoneWidth / 2,
+        x: viewportWidth / 2 - phoneWidth / 2 - 200,
         y: viewportHeight / 2 - phoneHeight / 2,
         rotation: 0,
         vx: 0,
@@ -239,8 +241,28 @@ export default function Desktop() {
         profileImage: profileImages[1 % profileImages.length]
       };
       
-      bodiesRef.current.push(initialBody);
-      forceUpdate(prev => prev + 1); // Force re-render after adding initial phone
+      // Second phone - offset to the right
+      const initialBody2: RigidBody = {
+        id: 2,
+        x: viewportWidth / 2 - phoneWidth / 2 + 200,
+        y: viewportHeight / 2 - phoneHeight / 2,
+        rotation: 0,
+        vx: 0,
+        vy: 0,
+        angularVelocity: 0,
+        mass: 1,
+        momentOfInertia: calculateMomentOfInertia(1, phoneWidth, phoneHeight),
+        restitution: 0.5,
+        friction: 0.4,
+        width: phoneWidth,
+        height: phoneHeight,
+        isDragging: false,
+        profileImage: profileImages[2 % profileImages.length]
+      };
+      
+      bodiesRef.current.push(initialBody1);
+      bodiesRef.current.push(initialBody2);
+      forceUpdate(prev => prev + 1); // Force re-render after adding initial phones
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
@@ -415,13 +437,17 @@ export default function Desktop() {
   }, [zoom]);
 
   const addPhone = () => {
-    // Spawn in center of current viewport (scaled by zoom)
-    const viewportWidth = window.innerWidth / zoom;
-    const viewportHeight = window.innerHeight / zoom;
+    // Get center of viewport in screen coordinates
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
     
-    // Random position in center area
-    const x = viewportWidth / 2 - phoneWidth / 2 + (Math.random() - 0.5) * 200;
-    const y = viewportHeight / 2 - phoneHeight / 2 + (Math.random() - 0.5) * 200;
+    // Convert screen center to world/canvas coordinates
+    const worldCenterX = (centerX - panX) / zoom;
+    const worldCenterY = (centerY - panY) / zoom;
+    
+    // Spawn at center with small random offset
+    const x = worldCenterX - phoneWidth / 2 + (Math.random() - 0.5) * 200;
+    const y = worldCenterY - phoneHeight / 2 + (Math.random() - 0.5) * 200;
     
     const newBody: RigidBody = {
       id: nextIdRef.current,
@@ -524,6 +550,12 @@ export default function Desktop() {
 
   // Handle phone un-confirmation (back button or swipe home)
   const handleUnconfirm = (phoneId: number) => {
+    // Prevent unconfirming if phone is in any confirmed group
+    const phonesInConfirmedGroups = getPhonesInConfirmedGroups();
+    if (phonesInConfirmedGroups.has(phoneId)) {
+      return; // Cannot unconfirm from confirmed groups
+    }
+    
     setConfirmedPhones(prev => {
       const next = new Set(prev);
       next.delete(phoneId);
@@ -541,17 +573,6 @@ export default function Desktop() {
             ...group,
             confirmedIds: newConfirmedIds,
           });
-        }
-      });
-      return next;
-    });
-    
-    // If phone is in a confirmed group, remove the entire group
-    setConfirmedGroups(prev => {
-      const next = new Map(prev);
-      prev.forEach((group, groupId) => {
-        if (group.memberIds.has(phoneId)) {
-          next.delete(groupId);
         }
       });
       return next;
@@ -582,23 +603,14 @@ export default function Desktop() {
   // Update potential groups based on current proximity
   // This runs in the physics loop to get real-time updates
   const updatePotentialGroups = () => {
-    const phonesInConfirmedGroups = getPhonesInConfirmedGroups();
-    
-    // Find all phones within proximity of each other (excluding those in confirmed groups)
-    const activeBodies = bodiesRef.current.filter(body => !phonesInConfirmedGroups.has(body.id));
+    // Include all phones in proximity detection (phones in confirmed groups can join new groups)
+    const activeBodies = bodiesRef.current;
     
     if (activeBodies.length < 2) {
-      // Clean up potential groups with no active members
+      // Clean up all potential groups if there are less than 2 phones
       setPotentialGroups(prev => {
         const next = new Map(prev);
-        next.forEach((group, groupId) => {
-          const hasActiveMembers = Array.from(group.memberIds).some(id => 
-            activeBodies.some(b => b.id === id)
-          );
-          if (!hasActiveMembers) {
-            next.delete(groupId);
-          }
-        });
+        next.clear();
         return next;
       });
       return;
@@ -669,11 +681,66 @@ export default function Desktop() {
       return component;
     };
     
-    // Find all connected components
+    // Helper function to check if all members of a group are still within proximity
+    const areMembersInProximity = (memberIds: Set<number>): boolean => {
+      const memberArray = Array.from(memberIds);
+      if (memberArray.length < 2) return false;
+      
+      // Check if all members are still in the proximity map
+      for (const memberId of memberArray) {
+        if (!proximityMap.has(memberId)) {
+          return false;
+        }
+      }
+      
+      // Check if all members form a connected component
+      const memberSet = new Set(memberArray);
+      const visitedForCheck = new Set<number>();
+      const queue = [memberArray[0]];
+      visitedForCheck.add(memberArray[0]);
+      
+      while (queue.length > 0) {
+        const currentId = queue.shift()!;
+        const nearby = proximityMap.get(currentId) || [];
+        
+        for (const nearbyId of nearby) {
+          if (memberSet.has(nearbyId) && !visitedForCheck.has(nearbyId)) {
+            visitedForCheck.add(nearbyId);
+            queue.push(nearbyId);
+          }
+        }
+      }
+      
+      // All members must be reachable from each other
+      return visitedForCheck.size === memberArray.length;
+    };
+    
+    // Helper function to check if exact members already exist in a confirmed group
+    const areMembersInConfirmedGroup = (memberIds: Set<number>): boolean => {
+      const memberArray = Array.from(memberIds).sort((a, b) => a - b);
+      const memberKey = memberArray.join(',');
+      
+      for (const confirmedGroup of confirmedGroupsRef.current.values()) {
+        const confirmedMembers = Array.from(confirmedGroup.memberIds).sort((a, b) => a - b);
+        const confirmedKey = confirmedMembers.join(',');
+        if (confirmedKey === memberKey) {
+          return true;
+        }
+      }
+      return false;
+    };
+    
+    // Find all connected components and create/update groups
+    const newGroups = new Map<string, PotentialGroup>();
     for (const body of activeBodies) {
       if (!visited.has(body.id) && proximityMap.has(body.id)) {
         const component = findConnectedComponent(body.id);
         if (component.size >= 2) {
+          // Skip creating potential group if these exact members are already in a confirmed group
+          if (areMembersInConfirmedGroup(component)) {
+            continue;
+          }
+          
           // Create or update potential group
           const memberIds = Array.from(component).sort((a, b) => a - b);
           const groupKey = memberIds.join(',');
@@ -690,36 +757,48 @@ export default function Desktop() {
           const groupId = existingGroupId || `potential-${nextGroupIdRef.current++}`;
           const existingGroup = potentialGroupsRef.current.get(groupId);
           
-          setPotentialGroups(prev => {
-            const next = new Map(prev);
-            next.set(groupId, {
-              id: groupId,
-              memberIds: new Set(component),
-              confirmedIds: existingGroup ? new Set(existingGroup.confirmedIds) : new Set(),
-            });
-            return next;
+          // Only preserve confirmedIds if exact same members are still in proximity AND member set hasn't changed
+          const memberSetUnchanged = existingGroup && 
+            existingGroup.memberIds.size === component.size &&
+            Array.from(existingGroup.memberIds).every(id => component.has(id));
+          
+          newGroups.set(groupId, {
+            id: groupId,
+            memberIds: new Set(component),
+            confirmedIds: existingGroup && memberSetUnchanged && areMembersInProximity(existingGroup.memberIds) 
+              ? new Set(existingGroup.confirmedIds) 
+              : new Set(),
           });
         }
       }
     }
     
-    // Clean up groups that no longer have members in proximity
+    // Clean up: verify all existing potential groups still have members in proximity
     setPotentialGroups(prev => {
       const next = new Map(prev);
-      const allActiveIds = new Set(activeBodies.map(b => b.id));
       
+      // First, update/add groups from current proximity detection
+      newGroups.forEach((group, groupId) => {
+        next.set(groupId, group);
+      });
+      
+      // Then, verify all groups still meet proximity requirements
+      // Only check groups that weren't just created/updated (newly created ones are already verified)
       next.forEach((group, groupId) => {
-        const hasActiveMembers = Array.from(group.memberIds).some(id => allActiveIds.has(id));
-        if (!hasActiveMembers) {
-          next.delete(groupId);
-        } else {
-          // Update memberIds to match current proximity
-          const currentMembers = Array.from(group.memberIds).filter(id => allActiveIds.has(id));
-          if (currentMembers.length < 2) {
+        if (!newGroups.has(groupId)) {
+          // Check if all members are still in proximity
+          if (!areMembersInProximity(group.memberIds)) {
             next.delete(groupId);
           }
         }
+        
+        // Also remove any potential groups that match existing confirmed groups
+        // (this handles cases where a potential group was created before confirmation)
+        if (areMembersInConfirmedGroup(group.memberIds)) {
+          next.delete(groupId);
+        }
       });
+      
       return next;
     });
   };
@@ -730,11 +809,14 @@ export default function Desktop() {
       const allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
       
       if (allConfirmed && group.memberIds.size >= 2) {
-        // Move to confirmed groups
+        // Generate a new sequential ID for confirmed groups (e.g., "1", "2", "3")
+        const confirmedGroupId = String(nextConfirmedGroupIdRef.current++);
+        
+        // Move to confirmed groups with new sequential ID
         setConfirmedGroups(prev => {
           const next = new Map(prev);
-          next.set(groupId, {
-            id: groupId,
+          next.set(confirmedGroupId, {
+            id: confirmedGroupId,
             memberIds: new Set(group.memberIds),
           });
           return next;
@@ -750,24 +832,16 @@ export default function Desktop() {
     });
   }, [potentialGroups]);
 
-  // Calculate proximity data for a specific phone
+    // Calculate proximity data for a specific phone
   const calculateProximityData = (body: RigidBody): ProximityData[] => {
     const proximityList: ProximityData[] = [];
-    const phonesInConfirmedGroups = getPhonesInConfirmedGroups();
     
-    // If this phone is in a confirmed group, don't calculate proximity
-    if (phonesInConfirmedGroups.has(body.id)) {
-      return proximityList;
-    }
-    
+    // Calculate proximity for all phones (phones in confirmed groups can still detect proximity)
     const centerX = body.x + body.width / 2;
     const centerY = body.y + body.height / 2;
     
     for (const otherBody of bodiesRef.current) {
       if (otherBody.id === body.id) continue;
-      
-      // Skip phones that are in confirmed groups
-      if (phonesInConfirmedGroups.has(otherBody.id)) continue;
       
       const otherCenterX = otherBody.x + otherBody.width / 2;
       const otherCenterY = otherBody.y + otherBody.height / 2;
@@ -840,37 +914,86 @@ export default function Desktop() {
       {/* Debug Menu - Top Left - Fixed outside zoom transform */}
       {showDebugMenu && (
         <div className="absolute top-4 left-4 z-50 pointer-events-none">
-          <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-5 max-w-md max-h-[80vh] overflow-auto pointer-events-auto" style={{ maxWidth: '400px' }}>
-            <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-200">
-              <h3 className="font-bold text-xl text-gray-900">Database Debug</h3>
+          <div 
+            className="bg-white shadow-lg max-w-md max-h-[80vh] overflow-auto pointer-events-auto" 
+            style={{ 
+              maxWidth: '400px',
+              borderRadius: '16px',
+              padding: '12px',
+              backgroundColor: '#ffffff'
+            }}
+          >
+            <div className="flex items-center justify-between" style={{ marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '24px', fontWeight: 700, color: '#000000' }}>Groups</h3>
               <button
                 onClick={() => setShowDebugMenu(false)}
                 className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+                aria-label="Close debug menu"
+                tabIndex={0}
+                style={{ 
+                  fontSize: '18px',
+                  lineHeight: 1,
+                  color: '#9ca3af',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0
+                }}
               >
                 ×
               </button>
             </div>
             
-            <div className="space-y-6">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {/* Potential Groups */}
               <div>
-                <h4 className="font-semibold text-base text-gray-900 mb-3">
+                <h4 style={{ 
+                  fontSize: '16px', 
+                  fontWeight: 700, 
+                  color: '#000000',
+                  marginBottom: '8px'
+                }}>
                   Potential Groups
-                  <span className="ml-2 font-normal text-sm text-gray-500">({potentialGroups.size})</span>
                 </h4>
                 {potentialGroups.size === 0 ? (
                   <p className="text-sm text-gray-400">No potential groups</p>
                 ) : (
-                  <div className="space-y-2">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {Array.from(potentialGroups.entries()).map(([groupId, group]) => (
-                      <div key={groupId} className="bg-yellow-50 border border-yellow-300 rounded-md p-3">
-                        <div className="font-semibold text-sm text-yellow-900 mb-2">Group {groupId}</div>
-                        <div className="text-sm text-gray-700 space-y-1">
-                          <div><span className="font-medium">Members:</span> {Array.from(group.memberIds).join(', ')}</div>
-                          <div><span className="font-medium">Confirmed:</span> {Array.from(group.confirmedIds).join(', ') || 'None'}</div>
-                          <div className="mt-2 pt-2 border-t border-yellow-200">
-                            <span className="font-medium">Progress:</span> {group.confirmedIds.size} / {group.memberIds.size}
-                          </div>
+                      <div 
+                        key={groupId} 
+                        style={{
+                          backgroundColor: '#f5f5f5',
+                          borderRadius: '8px',
+                          padding: '12px'
+                        }}
+                      >
+                        <div style={{ 
+                          fontSize: '14px', 
+                          fontWeight: 700, 
+                          color: '#000000',
+                          marginBottom: '8px'
+                        }}>
+                          Group{groupId}
+                        </div>
+                        <div style={{ 
+                          display: 'flex', 
+                          flexWrap: 'wrap', 
+                          gap: '12px 12px',
+                          rowGap: '4px'
+                        }}>
+                          {Array.from(group.memberIds).map((phoneId) => (
+                            <span 
+                              key={phoneId} 
+                              style={{ 
+                                fontSize: '13px',
+                                fontWeight: 400,
+                                color: '#737373'
+                              }}
+                            >
+                              Phone{phoneId} ✓
+                            </span>
+                          ))}
                         </div>
                       </div>
                     ))}
@@ -880,37 +1003,56 @@ export default function Desktop() {
               
               {/* Confirmed Groups */}
               <div>
-                <h4 className="font-semibold text-base text-gray-900 mb-3">
+                <h4 style={{ 
+                  fontSize: '16px', 
+                  fontWeight: 700, 
+                  color: '#000000',
+                  marginBottom: '8px'
+                }}>
                   Confirmed Groups
-                  <span className="ml-2 font-normal text-sm text-gray-500">({confirmedGroups.size})</span>
                 </h4>
                 {confirmedGroups.size === 0 ? (
                   <p className="text-sm text-gray-400">No confirmed groups</p>
                 ) : (
-                  <div className="space-y-2">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {Array.from(confirmedGroups.entries()).map(([groupId, group]) => (
-                      <div key={groupId} className="bg-green-50 border border-green-300 rounded-md p-3">
-                        <div className="font-semibold text-sm text-green-900 mb-2">Group {groupId}</div>
-                        <div className="text-sm text-gray-700">
-                          <span className="font-medium">Members:</span> {Array.from(group.memberIds).join(', ')}
+                      <div 
+                        key={groupId} 
+                        style={{
+                          backgroundColor: '#f5f5f5',
+                          borderRadius: '8px',
+                          padding: '12px'
+                        }}
+                      >
+                        <div style={{ 
+                          fontSize: '14px', 
+                          fontWeight: 700, 
+                          color: '#000000',
+                          marginBottom: '8px'
+                        }}>
+                          Group {groupId}
+                        </div>
+                        <div style={{ 
+                          display: 'flex', 
+                          flexWrap: 'wrap', 
+                          gap: '12px 12px',
+                          rowGap: '4px'
+                        }}>
+                          {Array.from(group.memberIds).map((phoneId) => (
+                            <span 
+                              key={phoneId} 
+                              style={{ 
+                                fontSize: '13px',
+                                fontWeight: 400,
+                                color: '#737373'
+                              }}
+                            >
+                              Phone{phoneId} ✓
+                            </span>
+                          ))}
                         </div>
                       </div>
                     ))}
-                  </div>
-                )}
-              </div>
-              
-              {/* Individual Confirmed Phones */}
-              <div>
-                <h4 className="font-semibold text-base text-gray-900 mb-3">
-                  Confirmed Phones
-                  <span className="ml-2 font-normal text-sm text-gray-500">({confirmedPhones.size})</span>
-                </h4>
-                {confirmedPhones.size === 0 ? (
-                  <p className="text-sm text-gray-400">No confirmed phones</p>
-                ) : (
-                  <div className="text-sm text-gray-700">
-                    {Array.from(confirmedPhones).join(', ')}
                   </div>
                 )}
               </div>

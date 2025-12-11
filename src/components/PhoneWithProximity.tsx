@@ -10,6 +10,7 @@ import { RigidBody } from "../utils/physics";
 import HomeScreenIPhone from "../imports/HomeScreenIPhone";
 import HomeIndicator from "../imports/HomeIndicator";
 import { BackButton } from "./GroupScreen";
+import { GroupsHistory } from "./GroupsHistory";
 
 interface ConfirmedGroup {
   id: string;
@@ -166,6 +167,7 @@ function Screen({
   onGroupSearchStateChange,
   confirmedGroups,
   potentialGroups,
+  onStateChange,
 }: {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -178,11 +180,15 @@ function Screen({
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
   confirmedGroups?: Map<string, ConfirmedGroup>;
   potentialGroups?: Map<string, PotentialGroup>;
+  onStateChange?: (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => void;
 }) {
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
   // groupConfirm -> confirmation / group screen state
-  const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm'>('homeScreen');
+  // groupsHistory -> view all groups user has been in
+  const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
+  // Track which group's screen is currently being viewed (each group has its own unique screen)
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const swipeStartRef = useRef<{ y: number; time: number; x: number } | null>(null);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -193,19 +199,55 @@ function Screen({
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
 
-  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm') => {
+  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', groupId?: string | null) => {
     setViewState(nextState);
+    // Update active group ID when entering a group screen
+    if (nextState === 'groupConfirm' && groupId) {
+      setActiveGroupId(groupId);
+    } else if (nextState === 'homeScreen' || nextState === 'groupsHistory') {
+      // Clear active group when going home or viewing history (allows forming new groups)
+      setActiveGroupId(null);
+    } else if (nextState === 'groupSearch') {
+      // Always update activeGroupId for groupSearch - set to groupId if provided, otherwise clear to null
+      setActiveGroupId(groupId || null);
+    }
     if (onGroupSearchStateChange) {
       onGroupSearchStateChange(body.id, nextState === 'groupSearch');
     }
+    // Notify parent of state changes
+    if (onStateChange) {
+      onStateChange(nextState, swipeOffset);
+    }
   };
+
+  // Notify parent when swipeOffset changes
+  useEffect(() => {
+    if (onStateChange) {
+      onStateChange(viewState, swipeOffset);
+    }
+  }, [swipeOffset, viewState, onStateChange]);
   
   // Check if any phones are within 8.5cm
   const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
   const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
-  const showNotification = hasNearbyPhones && viewState === 'homeScreen';
-  const swipeProgress = (viewState === 'groupSearch' || viewState === 'groupConfirm') ? Math.min(swipeOffset / 180, 1) : 0;
-  const swipeTranslation = (viewState === 'groupSearch' || viewState === 'groupConfirm') 
+  const showNotification = hasNearbyPhones && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory');
+  
+  // Handle message icon click to open groups history
+  const handleMessageIconClick = () => {
+    if (tool !== 'interact') return; // Prevent clicks in move mode
+    
+    const navigateToGroupsHistory = () => {
+      updateViewState('groupsHistory');
+    };
+    
+    if ('startViewTransition' in document) {
+      (document as any).startViewTransition(navigateToGroupsHistory);
+    } else {
+      navigateToGroupsHistory();
+    }
+  };
+  const swipeProgress = (viewState === 'groupSearch' || viewState === 'groupConfirm' || viewState === 'groupsHistory') ? Math.min(swipeOffset / 180, 1) : 0;
+  const swipeTranslation = (viewState === 'groupSearch' || viewState === 'groupConfirm' || viewState === 'groupsHistory') 
     ? -Math.min(swipeOffset, 240) * 0.35 
     : 0;
   const proximityBorderRadius = viewState === 'homeScreen' ? '36px' : `${38 - swipeProgress * 10}px`;
@@ -220,8 +262,11 @@ function Screen({
     e.stopPropagation();
     console.log('Expanding notification to full view');
     
-    // Open GroupSearch state
-    updateViewState('groupSearch');
+    // Open GroupSearch state - use potential group ID if available
+    const currentPotentialGroup = potentialGroups 
+      ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+      : undefined;
+    updateViewState('groupSearch', currentPotentialGroup?.id || null);
   };
   
   // Handle swipe up gesture on home bar - use global mouse tracking
@@ -309,7 +354,7 @@ function Screen({
         if (viewState === 'groupSearch' && !phoneConfirmedGroup && onUnconfirm) {
           onUnconfirm(body.id);
         }
-        // If in groupConfirm view or in a confirmed group, don't unconfirm - just go home
+        // If in groupConfirm, groupsHistory view or in a confirmed group, don't unconfirm - just go home
         updateViewState('homeScreen');
         setSwipeOffset(0);
         setIsTransitioning(false);
@@ -419,8 +464,11 @@ function Screen({
         onConfirm(body.id);
       }
       
-      // Transition to GroupConfirm state
-      updateViewState('groupConfirm');
+      // Transition to GroupConfirm state - use potential group ID (the group being confirmed)
+      const currentPotentialGroup = potentialGroups 
+        ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+        : undefined;
+      updateViewState('groupConfirm', currentPotentialGroup?.id || null);
       setIsTransitioning(false);
       
       // Reset visual offset once transition is done
@@ -456,32 +504,93 @@ function Screen({
     ? Array.from(confirmedGroups.values()).find(group => group.memberIds.has(body.id))
     : undefined;
   
-  // Get unconfirmed phones: if in a potential group, get members who haven't confirmed;
-  // otherwise, use proximity-based unconfirmed phones
-  const unconfirmedNearbyPhones = phonePotentialGroup
-    ? Array.from(phonePotentialGroup.memberIds)
-        .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
-        .map(id => allBodies.find(b => b.id === id))
-        .filter((phone): phone is RigidBody => phone !== undefined)
-    : nearbyPhones.filter(phone => {
-        const isConfirmed = confirmedPhones?.has(phone.id);
-        const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
-        return !isConfirmed && isInGroupSearch;
-      });
+  // Priority logic: Each group has its own unique screen instance
+  // 1. If viewing a specific confirmed group's screen (activeGroupId matches): lock to that confirmed group view
+  // 2. If viewing a specific potential group's screen (activeGroupId matches): show that potential group view
+  // 3. If in a potential group that phone has confirmed in (and not viewing another group): show potential group state
+  // 4. Otherwise, if in a confirmed group (and not viewing another group): show confirmed group state
+  // 5. Otherwise: use proximity-based state
   
-  // Get all confirmed phones: if in a confirmed group, get all group members;
-  // otherwise, use proximity-based confirmed phones
-  const allConfirmedPhones = phoneConfirmedGroup
-    ? Array.from(phoneConfirmedGroup.memberIds)
+  // Find which confirmed group matches the active group ID being viewed
+  const activeConfirmedGroup = activeGroupId && phoneConfirmedGroup && phoneConfirmedGroup.id === activeGroupId
+    ? phoneConfirmedGroup
+    : null;
+  
+  // Find which potential group matches the active group ID being viewed
+  const activePotentialGroup = activeGroupId && phonePotentialGroup && phonePotentialGroup.id === activeGroupId
+    ? phonePotentialGroup
+    : null;
+  
+  // Check if currently viewing a specific group's screen
+  const isViewingSpecificGroup = activeGroupId !== null;
+  const isViewingConfirmedGroupScreen = isViewingSpecificGroup && activeConfirmedGroup !== null;
+  const isViewingPotentialGroupScreen = isViewingSpecificGroup && activePotentialGroup !== null;
+  
+  // Check if phone has confirmed in a potential group (new group being formed)
+  const hasConfirmedInPotentialGroup = phonePotentialGroup && phonePotentialGroup.confirmedIds.has(body.id);
+  
+  // Get unconfirmed phones: show based on which group's screen is active
+  const unconfirmedNearbyPhones = isViewingConfirmedGroupScreen
+    ? [] // Viewing a confirmed group's screen: don't show any "Waiting for Others..."
+    : isViewingPotentialGroupScreen
+      ? Array.from(activePotentialGroup.memberIds)
+          .filter(id => !activePotentialGroup.confirmedIds.has(id) && id !== body.id)
+          .map(id => allBodies.find(b => b.id === id))
+          .filter((phone): phone is RigidBody => phone !== undefined)
+      : hasConfirmedInPotentialGroup && !isViewingSpecificGroup
+        ? Array.from(phonePotentialGroup.memberIds)
+            .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
+            .map(id => allBodies.find(b => b.id === id))
+            .filter((phone): phone is RigidBody => phone !== undefined)
+        : phonePotentialGroup && !isViewingSpecificGroup
+          ? Array.from(phonePotentialGroup.memberIds)
+              .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
+              .map(id => allBodies.find(b => b.id === id))
+              .filter((phone): phone is RigidBody => phone !== undefined)
+          : phoneConfirmedGroup && !isViewingSpecificGroup
+            ? [] // Fully confirmed group (no active potential group): don't show any "Waiting for Others..."
+            : nearbyPhones.filter(phone => {
+                const isConfirmed = confirmedPhones?.has(phone.id);
+                const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
+                return !isConfirmed && isInGroupSearch;
+              });
+  
+  // Get all confirmed phones: show based on which group's screen is active
+  // IMPORTANT: For confirmed groups, always use locked-in members regardless of proximity
+  const allConfirmedPhones = isViewingConfirmedGroupScreen
+    ? Array.from(activeConfirmedGroup.memberIds)
         .map(id => allBodies.find(b => b.id === id))
         .filter((phone): phone is RigidBody => phone !== undefined)
-    : confirmedPhones?.has(body.id) 
-      ? [body, ...confirmedNearbyPhones] 
-      : confirmedNearbyPhones;
+    : isViewingPotentialGroupScreen
+      ? Array.from(activePotentialGroup.memberIds)
+          .filter(id => activePotentialGroup.confirmedIds.has(id))
+          .map(id => allBodies.find(b => b.id === id))
+          .filter((phone): phone is RigidBody => phone !== undefined)
+      : hasConfirmedInPotentialGroup && !isViewingSpecificGroup
+        ? Array.from(phonePotentialGroup.memberIds)
+            .filter(id => phonePotentialGroup.confirmedIds.has(id))
+            .map(id => allBodies.find(b => b.id === id))
+            .filter((phone): phone is RigidBody => phone !== undefined)
+        : phonePotentialGroup && !isViewingSpecificGroup
+          ? Array.from(phonePotentialGroup.memberIds)
+              .filter(id => phonePotentialGroup.confirmedIds.has(id))
+              .map(id => allBodies.find(b => b.id === id))
+              .filter((phone): phone is RigidBody => phone !== undefined)
+          : phoneConfirmedGroup
+            ? // If in a confirmed group, always use locked-in members (ignore proximity)
+              Array.from(phoneConfirmedGroup.memberIds)
+                .map(id => allBodies.find(b => b.id === id))
+                .filter((phone): phone is RigidBody => phone !== undefined)
+            : confirmedPhones?.has(body.id) 
+              ? [body, ...confirmedNearbyPhones] 
+              : confirmedNearbyPhones;
   
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
+  // Prioritize potential group: if in a potential group, show that; otherwise show confirmed group if it exists
   const shouldShowUnifiedView = hasNearbyPhones || 
-    (viewState === 'groupConfirm' && (phoneConfirmedGroup || phonePotentialGroup)) ||
+    phonePotentialGroup ||
+    phoneConfirmedGroup ||
+    (viewState === 'groupConfirm' && (phonePotentialGroup || phoneConfirmedGroup)) ||
     (viewState === 'groupSearch' && phonePotentialGroup);
   const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
   const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
@@ -530,25 +639,76 @@ function Screen({
   
   return (
     <div 
-      className="absolute bg-black rounded-[29.303px]" 
+      className="absolute rounded-[29.303px]" 
       data-name="Screen"
       style={{ 
         pointerEvents: 'auto', 
         zIndex: 1,
-        top: -2,
-        left: -1,
+        top: 0,
+        left: 0,
         width: 312,
         height: 680,
-        overflow: (viewState === 'groupSearch' || viewState === 'groupConfirm') && swipeTranslation < 0 ? 'visible' : 'clip',
-        transform: (viewState === 'groupSearch' || viewState === 'groupConfirm') ? `translateY(${swipeTranslation}px)` : 'none',
-        transition: (isSwiping || isTransitioning) ? 'none' : `transform ${springDuration} ${springCurve}`,
+        overflow: 'hidden',
+        backgroundColor: 'black',
+        transform: (viewState === 'groupSearch' || viewState === 'groupConfirm' || viewState === 'groupsHistory') ? `translateY(${swipeTranslation}px)` : 'none',
+        transition: (isSwiping || isTransitioning || viewState === 'homeScreen') ? 'none' : `transform ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}`,
         willChange: 'transform',
       }}
     >
-      {/* Homescreen - always rendered behind */}
-      <div style={{ position: 'absolute', inset: 0, zIndex: 1, opacity: viewState === 'homeScreen' ? 1 : 0, willChange: 'opacity', transition: `opacity ${springDuration} ${springCurve}` }}>
-        <HomeScreenIPhone />
-      </div>
+      {/* Homescreen - shown when viewState is homeScreen (non-animated, for proper click handling) */}
+      {viewState === 'homeScreen' && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'auto' }}>
+          <HomeScreenIPhone onMessageIconClick={handleMessageIconClick} />
+        </div>
+      )}
+      
+      {/* Groups History Screen */}
+      {viewState === 'groupsHistory' && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 15 }}>
+          <GroupsHistory
+            confirmedGroups={confirmedGroups || new Map()}
+            allBodies={allBodies}
+            onBack={() => {
+              const navigateToHomeScreen = () => {
+                updateViewState('homeScreen');
+              };
+              
+              if ('startViewTransition' in document) {
+                (document as any).startViewTransition(navigateToHomeScreen);
+              } else {
+                navigateToHomeScreen();
+              }
+            }}
+            tool={tool}
+          />
+        </div>
+      )}
+      
+      {/* Swipeable home bar for groupsHistory - positioned outside transformed container */}
+      {viewState === 'groupsHistory' && (
+        <div
+          onMouseDown={handleSwipeStart}
+          onTouchStart={handleSwipeStart}
+          style={{
+            position: 'absolute',
+            bottom: '0',
+            left: '0',
+            right: '0',
+            height: '40px',
+            cursor: 'grab',
+            pointerEvents: 'auto',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'flex-end',
+            justifyContent: 'center',
+            paddingBottom: '6px',
+          }}
+        >
+          <div style={{ width: '110px', height: '3.5px' }}>
+            <HomeIndicator />
+          </div>
+        </div>
+      )}
       
       {/* Unified view that morphs between homeScreen notification, groupSearch, and groupConfirm */}
       {shouldShowUnifiedView && (
@@ -564,6 +724,7 @@ function Screen({
             backgroundColor: viewState === 'homeScreen' ? '#000000' : '#000000',
             backdropFilter: viewState === 'homeScreen' ? 'blur(20px)' : 'none',
             borderRadius: proximityBorderRadius,
+            border: viewState === 'homeScreen' ? '1px solid #333333' : 'none',
             cursor: viewState === 'homeScreen' ? 'pointer' : 'default',
             pointerEvents: viewState === 'groupConfirm' ? 'none' : 'auto',
             boxShadow: viewState === 'homeScreen' ? '0px 4px 12px rgba(0, 0, 0, 0.3)' : 'none',
@@ -574,8 +735,8 @@ function Screen({
                   ? 1
                   : 2,
             overflow: 'hidden',
-            willChange: 'opacity, height, border-radius, top',
-            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}`,
+            willChange: 'opacity, height, border-radius, top, border',
+            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}, border ${springDuration} ${springCurve}`,
           }}
         >
           {/* Shared cluster circle/profile - morphs across homeScreen, groupSearch, groupConfirm */}
@@ -1142,10 +1303,19 @@ function Screen({
                   tool={tool}
                   onClick={() => {
                     // Going back from GroupConfirm should clear confirmation
-                    if (onUnconfirm) {
+                    // But only if not in a confirmed group (can't leave confirmed groups)
+                    const isInConfirmedGroup = confirmedGroups
+                      ? Array.from(confirmedGroups.values()).some(group => group.memberIds.has(body.id))
+                      : false;
+                    
+                    if (!isInConfirmedGroup && onUnconfirm) {
                       onUnconfirm(body.id);
                     }
-                    updateViewState('groupSearch');
+                    // Go back to groupSearch - use potential group ID if available
+                    const currentPotentialGroup = potentialGroups 
+                      ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
+                      : undefined;
+                    updateViewState('groupSearch', currentPotentialGroup?.id || null);
                   }}
                 />
               </div>
@@ -1179,6 +1349,401 @@ function Screen({
           </div>
         </div>
       )}
+
+      {/* Proximity notification overlay for groupConfirm screen - only show when viewing an actual confirmed group */}
+      {viewState === 'groupConfirm' && isViewingConfirmedGroupScreen && showNotification && (
+        <div
+          onClick={handleNotificationClick}
+          style={{
+            position: 'absolute',
+            top: '11px',
+            left: '11px',
+            right: '11px',
+            height: notificationHeight,
+            backgroundColor: '#000000',
+            backdropFilter: 'blur(20px)',
+            borderRadius: '36px',
+            border: '1px solid #333333',
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+            boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.3)',
+            zIndex: 20,
+            overflow: 'hidden',
+            willChange: 'opacity, transform',
+            animation: 'fadeInScale 0.45s cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+        >
+          {/* Notification content - similar to homeScreen notification */}
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '60%',
+              transform: 'translate(-50%, -50%)',
+              width: '24px',
+              height: '24px',
+              borderRadius: '50%',
+              backgroundColor: 'transparent',
+              overflow: 'visible',
+            }}
+          >
+            {/* Center profile picture */}
+            <div
+              className="absolute left-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%]"
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '50%',
+                overflow: 'hidden',
+              }}
+            >
+              <img
+                alt=""
+                className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                style={{ borderRadius: 'inherit' }}
+                src={body.profileImage}
+              />
+            </div>
+
+            {/* Nearby phone profiles */}
+            {(() => {
+              const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+              if (nearbyWithinRange.length === 0) return null;
+
+              const notificationMaxDisplayRadius = 100;
+              const notificationMinDisplayRadius = 35;
+              const notificationMaxRangeCm = 8.5;
+              const notificationSize = 40;
+
+              type LayoutEntry = {
+                phoneId: number;
+                angleDeg: number;
+                notificationRadius: number;
+                profileImage: string;
+              };
+
+              const layoutEntries: LayoutEntry[] = nearbyWithinRange.map(data => {
+                const notificationNormalized = Math.min(
+                  Math.max(data.distanceCm / notificationMaxRangeCm, 0),
+                  1,
+                );
+                const notificationRadius =
+                  notificationMinDisplayRadius +
+                  Math.pow(notificationNormalized, 1.2) *
+                    (notificationMaxDisplayRadius - notificationMinDisplayRadius);
+
+                const nearbyPhone = allBodies.find(b => b.id === data.phoneId);
+                const profileImage = nearbyPhone?.profileImage || imgContainer1;
+
+                return {
+                  phoneId: data.phoneId,
+                  angleDeg: data.degrees,
+                  notificationRadius,
+                  profileImage,
+                };
+              });
+
+              const toCartesian = (radius: number, angleDeg: number) => {
+                const angleRad = (angleDeg * Math.PI) / 180;
+                return {
+                  x: Math.cos(angleRad) * radius,
+                  y: Math.sin(angleRad) * radius,
+                };
+              };
+
+              const resolveOverlaps2D = (
+                xs: number[],
+                ys: number[],
+                sizes: number[],
+                margin: number,
+              ) => {
+                const iterations = 8;
+                const count = xs.length;
+
+                for (let it = 0; it < iterations; it++) {
+                  for (let i = 0; i < count; i++) {
+                    for (let j = i + 1; j < count; j++) {
+                      const dx = xs[j] - xs[i];
+                      const dy = ys[j] - ys[i];
+                      let dist = Math.sqrt(dx * dx + dy * dy);
+                      const minDist = sizes[i] / 2 + sizes[j] / 2 + margin;
+
+                      if (dist < 1e-4) {
+                        dist = 1e-4;
+                      }
+
+                      if (dist < minDist) {
+                        const overlap = minDist - dist;
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+                        const shift = overlap / 2;
+
+                        xs[i] -= nx * shift;
+                        ys[i] -= ny * shift;
+                        xs[j] += nx * shift;
+                        ys[j] += ny * shift;
+                      }
+                    }
+                  }
+                }
+              };
+
+              const notifXs: number[] = [];
+              const notifYs: number[] = [];
+              const notifSizes: number[] = [];
+
+              layoutEntries.forEach(entry => {
+                const { x, y } = toCartesian(entry.notificationRadius, entry.angleDeg);
+                notifXs.push(x);
+                notifYs.push(y);
+                notifSizes.push(notificationSize);
+              });
+
+              resolveOverlaps2D(notifXs, notifYs, notifSizes, 4);
+
+              return layoutEntries.map((entry, index) => {
+                const x = notifXs[index];
+                const y = notifYs[index];
+                const size = notificationSize;
+
+                return (
+                  <div
+                    key={entry.phoneId}
+                    style={{
+                      position: 'absolute',
+                      left: '50%',
+                      top: '60%',
+                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                      width: `${size}px`,
+                      height: `${size}px`,
+                      borderRadius: '50%',
+                      overflow: 'hidden',
+                      backgroundColor: 'white',
+                    }}
+                  >
+                    <img
+                      alt=""
+                      className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                      style={{ borderRadius: 'inherit' }}
+                      src={entry.profileImage}
+                    />
+                  </div>
+                );
+              });
+            })()}
+          </div>
+
+          {/* GroupDrop title */}
+          <p 
+            className="absolute font-['SF_Pro:Medium',sans-serif] font-[510] leading-[normal] left-[24px] text-nowrap text-white tracking-[-0.1504px] whitespace-pre" 
+            style={{ 
+              fontVariationSettings: "'wdth' 100",
+              top: '24px',
+              fontSize: '18px',
+            }}
+          >
+            GroupDrop
+          </p>
+        </div>
+      )}
+
+      {/* Proximity notification overlay for groupsHistory screen */}
+      {viewState === 'groupsHistory' && showNotification && (
+        <div
+          onClick={handleNotificationClick}
+          style={{
+            position: 'absolute',
+            top: '11px',
+            left: '11px',
+            right: '11px',
+            height: notificationHeight,
+            backgroundColor: '#000000',
+            backdropFilter: 'blur(20px)',
+            borderRadius: '36px',
+            border: '1px solid #333333',
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+            boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.3)',
+            zIndex: 20,
+            overflow: 'hidden',
+            willChange: 'opacity, transform',
+            animation: 'fadeInScale 0.45s cubic-bezier(0.22, 1, 0.36, 1)',
+            transform: viewState === 'groupsHistory' && swipeTranslation < 0 ? `translateY(${-swipeTranslation}px)` : 'none',
+          }}
+        >
+          {/* Notification content - similar to homeScreen notification */}
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '60%',
+              transform: 'translate(-50%, -50%)',
+              width: '24px',
+              height: '24px',
+              borderRadius: '50%',
+              backgroundColor: 'transparent',
+              overflow: 'visible',
+            }}
+          >
+            {/* Center profile picture */}
+            <div
+              className="absolute left-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%]"
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '50%',
+                overflow: 'hidden',
+              }}
+            >
+              <img
+                alt=""
+                className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                style={{ borderRadius: 'inherit' }}
+                src={body.profileImage}
+              />
+            </div>
+
+            {/* Nearby phone profiles */}
+            {(() => {
+              const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+              if (nearbyWithinRange.length === 0) return null;
+
+              const notificationMaxDisplayRadius = 100;
+              const notificationMinDisplayRadius = 35;
+              const notificationMaxRangeCm = 8.5;
+              const notificationSize = 40;
+
+              type LayoutEntry = {
+                phoneId: number;
+                angleDeg: number;
+                notificationRadius: number;
+                profileImage: string;
+              };
+
+              const layoutEntries: LayoutEntry[] = nearbyWithinRange.map(data => {
+                const notificationNormalized = Math.min(
+                  Math.max(data.distanceCm / notificationMaxRangeCm, 0),
+                  1,
+                );
+                const notificationRadius =
+                  notificationMinDisplayRadius +
+                  Math.pow(notificationNormalized, 1.2) *
+                    (notificationMaxDisplayRadius - notificationMinDisplayRadius);
+
+                const nearbyPhone = allBodies.find(b => b.id === data.phoneId);
+                const profileImage = nearbyPhone?.profileImage || imgContainer1;
+
+                return {
+                  phoneId: data.phoneId,
+                  angleDeg: data.degrees,
+                  notificationRadius,
+                  profileImage,
+                };
+              });
+
+              const toCartesian = (radius: number, angleDeg: number) => {
+                const angleRad = (angleDeg * Math.PI) / 180;
+                return {
+                  x: Math.cos(angleRad) * radius,
+                  y: Math.sin(angleRad) * radius,
+                };
+              };
+
+              const resolveOverlaps2D = (
+                xs: number[],
+                ys: number[],
+                sizes: number[],
+                margin: number,
+              ) => {
+                const iterations = 8;
+                const count = xs.length;
+
+                for (let it = 0; it < iterations; it++) {
+                  for (let i = 0; i < count; i++) {
+                    for (let j = i + 1; j < count; j++) {
+                      const dx = xs[j] - xs[i];
+                      const dy = ys[j] - ys[i];
+                      let dist = Math.sqrt(dx * dx + dy * dy);
+                      const minDist = sizes[i] / 2 + sizes[j] / 2 + margin;
+
+                      if (dist < 1e-4) {
+                        dist = 1e-4;
+                      }
+
+                      if (dist < minDist) {
+                        const overlap = minDist - dist;
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+                        const shift = overlap / 2;
+
+                        xs[i] -= nx * shift;
+                        ys[i] -= ny * shift;
+                        xs[j] += nx * shift;
+                        ys[j] += ny * shift;
+                      }
+                    }
+                  }
+                }
+              };
+
+              const notifXs: number[] = [];
+              const notifYs: number[] = [];
+              const notifSizes: number[] = [];
+
+              layoutEntries.forEach(entry => {
+                const { x, y } = toCartesian(entry.notificationRadius, entry.angleDeg);
+                notifXs.push(x);
+                notifYs.push(y);
+                notifSizes.push(notificationSize);
+              });
+
+              resolveOverlaps2D(notifXs, notifYs, notifSizes, 4);
+
+              return layoutEntries.map((entry, index) => {
+                const x = notifXs[index];
+                const y = notifYs[index];
+                const size = notificationSize;
+
+                return (
+                  <div
+                    key={entry.phoneId}
+                    style={{
+                      position: 'absolute',
+                      left: '50%',
+                      top: '60%',
+                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                      width: `${size}px`,
+                      height: `${size}px`,
+                      borderRadius: '50%',
+                      overflow: 'hidden',
+                      backgroundColor: 'white',
+                    }}
+                  >
+                    <img
+                      alt=""
+                      className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                      style={{ borderRadius: 'inherit' }}
+                      src={entry.profileImage}
+                    />
+                  </div>
+                );
+              });
+            })()}
+          </div>
+
+          {/* GroupDrop title */}
+          <p 
+            className="absolute font-['SF_Pro:Medium',sans-serif] font-[510] leading-[normal] left-[24px] text-nowrap text-white tracking-[-0.1504px] whitespace-pre" 
+            style={{ 
+              fontVariationSettings: "'wdth' 100",
+              top: '24px',
+              fontSize: '18px',
+            }}
+          >
+            GroupDrop
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1204,21 +1769,66 @@ export function PhoneWithProximity({
   confirmedGroups,
   potentialGroups,
 }: PhoneWithProximityProps) {
+  const [screenViewState, setScreenViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
+  const [screenSwipeOffset, setScreenSwipeOffset] = useState(0);
+
+  const handleStateChange = (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => {
+    setScreenViewState(viewState);
+    setScreenSwipeOffset(swipeOffset);
+  };
+
+  // Show underneath home screen only when swiping up (swipeOffset > 0) from non-homeScreen states
+  // When in homeScreen state, the home screen is rendered inside Screen component instead
+  const shouldShowUnderneathHomeScreen = screenSwipeOffset > 0 && screenViewState !== 'homeScreen';
+
   return (
-    <div className="relative size-full bg-black" data-name="PhoneWithProximity">
-      <Screen
-        body={body}
-        proximityData={proximityData}
-        tool={tool}
-        allBodies={allBodies}
-        onConfirm={onConfirm}
-        onUnconfirm={onUnconfirm}
-        confirmedPhones={confirmedPhones}
-        groupSearchOpenPhones={groupSearchOpenPhones}
-        onGroupSearchStateChange={onGroupSearchStateChange}
-        confirmedGroups={confirmedGroups}
-        potentialGroups={potentialGroups}
-      />
+    <div 
+      className="relative size-full bg-black" 
+      data-name="PhoneWithProximity"
+    >
+      {/* Clipping container to prevent content from escaping during swipe */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '-2px',
+          left: '-1px',
+          width: '312px',
+          height: '680px',
+          overflow: 'hidden',
+          borderRadius: '29.303px',
+          zIndex: 1,
+          pointerEvents: 'none',
+          backgroundColor: 'black',
+        }}
+      >
+        {/* Home screen - rendered behind, shows through when Screen translates up during swipe */}
+        {shouldShowUnderneathHomeScreen && (
+          <div 
+            style={{ 
+              position: 'absolute', 
+              inset: 0, 
+              zIndex: 0,
+              pointerEvents: 'none',
+            }}
+          >
+            <HomeScreenIPhone />
+          </div>
+        )}
+        <Screen
+          body={body}
+          proximityData={proximityData}
+          tool={tool}
+          allBodies={allBodies}
+          onConfirm={onConfirm}
+          onUnconfirm={onUnconfirm}
+          confirmedPhones={confirmedPhones}
+          groupSearchOpenPhones={groupSearchOpenPhones}
+          onGroupSearchStateChange={onGroupSearchStateChange}
+          confirmedGroups={confirmedGroups}
+          potentialGroups={potentialGroups}
+          onStateChange={handleStateChange}
+        />
+      </div>
       <Bezel />
     </div>
   );
