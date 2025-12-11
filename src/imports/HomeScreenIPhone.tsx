@@ -492,18 +492,23 @@ function AppIcons2() {
   );
 }
 
-function Icon19() {
+function Icon19({ onClick }: { onClick?: () => void }) {
   return (
-    <div className="relative shrink-0 size-[49.353px]" data-name="Icon">
+    <div 
+      className="relative shrink-0 size-[49.353px] cursor-pointer" 
+      data-name="Icon"
+      onClick={onClick}
+      style={{ pointerEvents: 'auto' }}
+    >
       <img alt="" className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full" src={imgIcon18} />
     </div>
   );
 }
 
-function AppIcons3() {
+function AppIcons3({ onMessageIconClick }: { onMessageIconClick?: () => void }) {
   return (
     <div className="content-stretch flex flex-col gap-[3.856px] items-center relative shrink-0 size-[49.353px]" data-name="App Icons">
-      <Icon19 />
+      <Icon19 onClick={onMessageIconClick} />
     </div>
   );
 }
@@ -524,14 +529,14 @@ function AppIcons4() {
   );
 }
 
-function Dock() {
+function Dock({ onMessageIconClick }: { onMessageIconClick?: () => void }) {
   return (
     <div className="backdrop-blur-[1.542px] backdrop-filter basis-0 bg-[rgba(0,0,0,0.2)] grow min-h-px min-w-px relative rounded-[29.303px] shrink-0" data-name="Dock">
       <div className="flex flex-row items-center size-full">
         <div className="box-border content-stretch flex items-center justify-between pb-[14.652px] pt-[15.423px] px-[14.652px] relative w-full">
           <AppIcons1 />
           <AppIcons2 />
-          <AppIcons3 />
+          <AppIcons3 onMessageIconClick={onMessageIconClick} />
           <AppIcons4 />
         </div>
       </div>
@@ -539,26 +544,26 @@ function Dock() {
   );
 }
 
-function Dock1() {
+function Dock1({ onMessageIconClick }: { onMessageIconClick?: () => void }) {
   return (
     <div className="relative shrink-0 w-full" data-name="Dock">
       <div className="flex flex-row items-center justify-center size-full">
         <div className="box-border content-stretch flex items-center justify-center pb-[13.109px] pt-[15.423px] px-[13.109px] relative w-full">
-          <Dock />
+          <Dock onMessageIconClick={onMessageIconClick} />
         </div>
       </div>
     </div>
   );
 }
 
-export default function HomeScreenIPhone() {
+export default function HomeScreenIPhone({ onMessageIconClick }: { onMessageIconClick?: () => void }) {
   return (
     <div className="content-stretch flex flex-col items-center overflow-clip relative rounded-[24.677px] size-full" data-name="Home Screen - iPhone">
       <Wallpaper />
       <StatusBar />
       <AppIcons />
       <SearchField />
-      <Dock1 />
+      <Dock1 onMessageIconClick={onMessageIconClick} />
     </div>
   );
 }

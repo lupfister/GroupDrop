@@ -10,6 +10,7 @@ import { RigidBody } from "../utils/physics";
 import HomeScreenIPhone from "../imports/HomeScreenIPhone";
 import HomeIndicator from "../imports/HomeIndicator";
 import { BackButton } from "./GroupScreen";
+import { GroupsHistory } from "./GroupsHistory";
 
 interface ConfirmedGroup {
   id: string;
@@ -182,7 +183,8 @@ function Screen({
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
   // groupConfirm -> confirmation / group screen state
-  const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm'>('homeScreen');
+  // groupsHistory -> view all groups user has been in
+  const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
   // Track which group's screen is currently being viewed (each group has its own unique screen)
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const swipeStartRef = useRef<{ y: number; time: number; x: number } | null>(null);
@@ -195,13 +197,13 @@ function Screen({
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
 
-  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm', groupId?: string | null) => {
+  const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', groupId?: string | null) => {
     setViewState(nextState);
     // Update active group ID when entering a group screen
     if (nextState === 'groupConfirm' && groupId) {
       setActiveGroupId(groupId);
-    } else if (nextState === 'homeScreen') {
-      // Clear active group when going home (allows forming new groups)
+    } else if (nextState === 'homeScreen' || nextState === 'groupsHistory') {
+      // Clear active group when going home or viewing history (allows forming new groups)
       setActiveGroupId(null);
     } else if (nextState === 'groupSearch' && groupId) {
       setActiveGroupId(groupId);
@@ -215,6 +217,12 @@ function Screen({
   const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
   const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
   const showNotification = hasNearbyPhones && viewState === 'homeScreen';
+  
+  // Handle message icon click to open groups history
+  const handleMessageIconClick = () => {
+    if (tool !== 'interact') return; // Prevent clicks in move mode
+    updateViewState('groupsHistory');
+  };
   const swipeProgress = (viewState === 'groupSearch' || viewState === 'groupConfirm') ? Math.min(swipeOffset / 180, 1) : 0;
   const swipeTranslation = (viewState === 'groupSearch' || viewState === 'groupConfirm') 
     ? -Math.min(swipeOffset, 240) * 0.35 
@@ -623,8 +631,20 @@ function Screen({
     >
       {/* Homescreen - always rendered behind */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 1, opacity: viewState === 'homeScreen' ? 1 : 0, willChange: 'opacity', transition: `opacity ${springDuration} ${springCurve}` }}>
-        <HomeScreenIPhone />
+        <HomeScreenIPhone onMessageIconClick={handleMessageIconClick} />
       </div>
+      
+      {/* Groups History Screen */}
+      {viewState === 'groupsHistory' && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 15, willChange: 'opacity', animation: 'fadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1)' }}>
+          <GroupsHistory
+            confirmedGroups={confirmedGroups || new Map()}
+            allBodies={allBodies}
+            onBack={() => updateViewState('homeScreen')}
+            tool={tool}
+          />
+        </div>
+      )}
       
       {/* Unified view that morphs between homeScreen notification, groupSearch, and groupConfirm */}
       {shouldShowUnifiedView && (
