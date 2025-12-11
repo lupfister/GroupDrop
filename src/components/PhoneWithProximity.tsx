@@ -194,10 +194,8 @@ function Screen({
   const confirmSwipeProgress = Math.min(confirmSwipeOffset / confirmMaxVisualOffset, 1);
   const confirmCircleScale = 1 - confirmSwipeProgress * 0.18; // subtle shrink for gray circle container
   
-  // Handle notification click to expand to full view - only works in interact mode
+  // Handle notification click to expand to full view
   const handleNotificationClick = (e: React.MouseEvent) => {
-    if (tool !== 'interact') return; // Prevent clicks in move mode
-    
     e.stopPropagation();
     console.log('Expanding notification to full view');
     
@@ -310,7 +308,7 @@ function Screen({
   const currentConfirmSwipeDistanceRef = useRef(0);
   
   const handleConfirmSwipeStart = (e: React.MouseEvent | React.TouchEvent) => {
-    if (isTransitioning || tool !== 'interact') return;
+    if (isTransitioning) return;
     e.stopPropagation();
     e.preventDefault();
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
@@ -843,7 +841,7 @@ function Screen({
               willChange: 'opacity, transform',
               transition: `opacity ${springDuration} ${springCurve}`,
               pointerEvents: viewState === 'groupSearch' ? 'auto' : 'none',
-              cursor: viewState === 'groupSearch' && tool === 'interact' ? 'grab' : 'default',
+              cursor: viewState === 'groupSearch' ? 'grab' : 'default',
             }}
           >
             <div
@@ -1104,7 +1102,7 @@ export function PhoneWithProximity({
   onGroupSearchStateChange,
 }: PhoneWithProximityProps) {
   return (
-    <div className="relative size-full bg-black" data-name="PhoneWithProximity">
+    <div className="relative size-full bg-red" data-name="PhoneWithProximity" style={{ pointerEvents: 'auto' }}>
       <Screen
         body={body}
         proximityData={proximityData}

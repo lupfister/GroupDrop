@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback } from "react";
+import React from "react";
 import { RigidBody } from "../utils/physics";
 
 export interface ProximityData {
@@ -11,7 +12,7 @@ export interface ProximityData {
 }
 
 interface DraggablePhoneProps {
-  children: React.ReactNode;
+  children: React.ReactElement;
   body: RigidBody;
   zoom: number;
   onUpdate?: () => void;
@@ -29,14 +30,28 @@ export function DraggablePhone({
 }: DraggablePhoneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
-  const grabOffsetRef = useRef({ x: 0, y: 0 });
-  const lastPosRef = useRef({ x: 0, y: 0, time: Date.now() });
-  const lastRotationRef = useRef(0);
-  const isCornerGrabRef = useRef(false);
-  const initialGrabAngleRef = useRef(0); // Store the initial angle when grabbing
-  const isPanningRef = useRef(false); // Track if we're in pan mode (2-finger or middle-click)
-  const isWheelPanningRef = useRef(false); // Track if we're actively wheel panning this phone
-  const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
+  
+  // Store initial positions for smooth delta-based dragging
+  const initialPointerWorldRef = useRef({ x: 0, y: 0 });
+  const initialPhonePosRef = useRef({ x: 0, y: 0 });
+  const initialRotationRef = useRef(0);
+  
+  // Use refs to track live position during drag (avoid re-renders)
+  const livePosRef = useRef({ x: 0, y: 0 });
+  const liveRotationRef = useRef(0);
+  const animationFrameRef = useRef<number | null>(null);
+  
+  // Track last position and time for velocity calculation
+  const lastMoveTimeRef = useRef(Date.now());
+  const lastMovePosRef = useRef({ x: 0, y: 0 });
+  
+  // Track movement velocity for follow-through effect
+  const velocityRef = useRef({ x: 0, y: 0 });
+  const lastPointerPosRef = useRef({ x: 0, y: 0 });
+  
+  // Auto-alignment animation
+  const alignmentAnimationRef = useRef<number | null>(null);
   
   // Calculate radar position and size for a phone based on proximity data
   const calculateRadarPosition = (data: ProximityData) => {
@@ -92,180 +107,240 @@ export function DraggablePhone({
     [zoom],
   );
 
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element) return;
+  // Handle drag via the handle using pointer events
+  const handleHandlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
 
-    const handleMouseDown = (e: MouseEvent) => {
-      // In move mode, use left-click (button 0)
-      // In interact mode, use middle-click (button 1) for panning
-      const isMoveButton = tool === 'move' ? e.button === 0 : e.button === 1;
-      
-      if (!isMoveButton) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-
-      isPanningRef.current = true;
-      isDraggingRef.current = true;
-      body.isDragging = true;
-
-      // Convert screen coordinates to world coordinates
-      const world = screenToWorld(e.clientX, e.clientY);
-
-      // Calculate offset from center
-      const centerX = body.x + body.width / 2;
-      const centerY = body.y + body.height / 2;
-
-      grabOffsetRef.current = {
-        x: world.x - centerX,
-        y: world.y - centerY,
-      };
-
-      // Reset velocities
-      body.vx = 0;
-      body.vy = 0;
-      body.angularVelocity = 0;
-
-      lastPosRef.current = {
-        x: body.x,
-        y: body.y,
-        time: Date.now(),
-      };
-      lastRotationRef.current = body.rotation;
-      
-      // Check if this is a corner grab (far from center in both dimensions)
-      const offset = grabOffsetRef.current;
-      const offsetDistance = Math.sqrt(offset.x * offset.x + offset.y * offset.y);
-      // Consider it a corner grab if distance is more than 70% of the diagonal
-      const maxDistance = Math.sqrt((body.width / 2) ** 2 + (body.height / 2) ** 2);
-      isCornerGrabRef.current = offsetDistance > maxDistance * 0.7;
-      
-      // Store the initial angle when grabbing
-      if (isCornerGrabRef.current) {
-        const dx = world.x - centerX;
-        const dy = world.y - centerY;
-        initialGrabAngleRef.current = Math.atan2(dy, dx);
-      }
-    };
+    const pointerId = e.pointerId;
+    activePointerIdRef.current = pointerId;
     
-    element.addEventListener("mousedown", handleMouseDown);
-    // Removed wheel handler - phones should not respond to scroll events
+    // Set pointer capture to track movement even outside the element
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.setPointerCapture(pointerId);
+    }
 
-    // Add global mouse move and mouse up handlers so dragging continues even when cursor leaves the phone
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      if (!isPanningRef.current || !isDraggingRef.current) return;
+    isDraggingRef.current = true;
+    body.isDragging = true;
 
-      e.preventDefault();
+    // Convert screen coordinates to world coordinates
+    const world = screenToWorld(e.clientX, e.clientY);
 
-      const now = Date.now();
-      const dt = (now - lastPosRef.current.time) / 1000;
+    // Store initial pointer position (in world space)
+    initialPointerWorldRef.current = { x: world.x, y: world.y };
+    
+    // Store initial phone position and rotation
+    initialPhonePosRef.current = { x: body.x, y: body.y };
+    initialRotationRef.current = body.rotation;
+    
+    // Initialize live position and velocity tracking
+    livePosRef.current = { x: body.x, y: body.y };
+    liveRotationRef.current = body.rotation;
+    lastMovePosRef.current = { x: body.x, y: body.y };
+    lastMoveTimeRef.current = Date.now();
+    lastPointerPosRef.current = { x: world.x, y: world.y };
+    velocityRef.current = { x: 0, y: 0 };
 
-      // Convert screen to world
-      const world = screenToWorld(e.clientX, e.clientY);
+    // Reset velocities
+    body.vx = 0;
+    body.vy = 0;
+    body.angularVelocity = 0;
+  }, [body, screenToWorld]);
+
+  // Update phone position and rotation directly (avoid re-renders during drag)
+  const updatePhoneTransform = useCallback((x: number, y: number, rotation: number) => {
+    body.x = x;
+    body.y = y;
+    body.rotation = rotation;
+    livePosRef.current = { x, y };
+    liveRotationRef.current = rotation;
+    
+    // Update transform directly via DOM for smooth movement
+    if (containerRef.current) {
+      containerRef.current.style.transform = `translate(${x}px, ${y}px) rotate(${rotation}rad)`;
+    }
+  }, [body]);
+  
+  // Smoothly realign phone to face forward (rotation = 0)
+  const realignPhone = useCallback(() => {
+    if (alignmentAnimationRef.current !== null) {
+      cancelAnimationFrame(alignmentAnimationRef.current);
+    }
+    
+    const startRotation = liveRotationRef.current;
+    const targetRotation = 0;
+    const startTime = Date.now();
+    const duration = 400; // 400ms animation
+    
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
       
-      // Center of the phone
-      const centerX = body.x + body.width / 2;
-      const centerY = body.y + body.height / 2;
-
-      if (isCornerGrabRef.current) {
-        // CORNER GRAB MODE: Rotate around center, no translation
-        // Calculate current angle from center to cursor
-        const dx = world.x - centerX;
-        const dy = world.y - centerY;
-        const currentAngle = Math.atan2(dy, dx);
-        
-        // Calculate rotation delta from initial grab
-        const angleDelta = currentAngle - initialGrabAngleRef.current;
-        
-        // Apply the rotation delta to the initial rotation
-        const newRotation = lastRotationRef.current + angleDelta;
-        
-        if (dt > 0 && dt < 0.1) {
-          // Calculate angular velocity
-          let deltaRotation = newRotation - body.rotation;
-          // Normalize to [-PI, PI]
-          while (deltaRotation > Math.PI) deltaRotation -= Math.PI * 2;
-          while (deltaRotation < -Math.PI) deltaRotation += Math.PI * 2;
-          
-          body.angularVelocity = deltaRotation / dt;
-        }
-        
-        body.rotation = newRotation;
-        
-        // No linear velocity in corner grab mode
-        body.vx = 0;
-        body.vy = 0;
+      // Ease-out cubic for smooth deceleration
+      const eased = 1 - Math.pow(1 - progress, 3);
+      
+      const currentRotation = startRotation + (targetRotation - startRotation) * eased;
+      
+      // Normalize rotation to [-PI, PI]
+      let normalizedRotation = currentRotation;
+      while (normalizedRotation > Math.PI) normalizedRotation -= Math.PI * 2;
+      while (normalizedRotation < -Math.PI) normalizedRotation += Math.PI * 2;
+      
+      // Update rotation while keeping position
+      updatePhoneTransform(livePosRef.current.x, livePosRef.current.y, normalizedRotation);
+      
+      if (progress < 1) {
+        alignmentAnimationRef.current = requestAnimationFrame(animate);
       } else {
-        // NORMAL DRAG MODE: Translate with rotation based on offset
-        const newX = world.x - body.width / 2 - grabOffsetRef.current.x;
-        const newY = world.y - body.height / 2 - grabOffsetRef.current.y;
-
-        // Calculate velocity
-        if (dt > 0 && dt < 0.1) {
-          body.vx = (newX - body.x) / dt;
-          body.vy = (newY - body.y) / dt;
-
-          // Calculate angular velocity based on grab offset
-          const offset = grabOffsetRef.current;
-          const offsetDistance = Math.sqrt(
-            offset.x * offset.x + offset.y * offset.y,
-          );
-
-          // Only apply rotation if grabbed far from center
-          if (offsetDistance > 20) {
-            const rotationScale = Math.min(
-              (offsetDistance - 20) / 120,
-              2,
-            );
-            // Cross product for rotation
-            const crossProduct =
-              (offset.x * body.vy - offset.y * body.vx) /
-              (offsetDistance * 1000);
-            body.angularVelocity = crossProduct * rotationScale;
-            body.rotation += body.angularVelocity * dt;
-          }
-        }
-
-        body.x = newX;
-        body.y = newY;
-      }
-
-      lastPosRef.current = {
-        x: body.x,
-        y: body.y,
-        time: now,
-      };
-
-      if (onUpdate) onUpdate();
-    };
-    
-    const handleGlobalMouseUp = (e: MouseEvent) => {
-      const isMoveButton = tool === 'move' ? e.button === 0 : e.button === 1;
-      
-      if (isMoveButton && isPanningRef.current) {
-        isPanningRef.current = false;
-        isDraggingRef.current = false;
-        body.isDragging = false;
-        
-        // Apply momentum
-        const scale = 0.3;
-        body.vx *= scale;
-        body.vy *= scale;
-        
+        // Finalize
+        body.rotation = 0;
+        liveRotationRef.current = 0;
+        alignmentAnimationRef.current = null;
         if (onUpdate) onUpdate();
       }
     };
     
-    window.addEventListener("mousemove", handleGlobalMouseMove);
-    window.addEventListener("mouseup", handleGlobalMouseUp);
+    animate();
+  }, [body, updatePhoneTransform, onUpdate]);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+
+    // Global pointer move handler - uses delta-based movement
+    const handleGlobalPointerMove = (e: PointerEvent) => {
+      if (!isDraggingRef.current) return;
+      if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
+
+      e.preventDefault();
+
+      // Convert screen to world coordinates
+      const world = screenToWorld(e.clientX, e.clientY);
+      
+      // Calculate delta from initial pointer position
+      const deltaX = world.x - initialPointerWorldRef.current.x;
+      const deltaY = world.y - initialPointerWorldRef.current.y;
+      
+      // Apply delta to initial phone position
+      // Phone leads from the top (handle position), so movement is direct
+      const newX = initialPhonePosRef.current.x + deltaX;
+      const newY = initialPhonePosRef.current.y + deltaY;
+      
+      // Calculate velocity for follow-through effect
+      const now = Date.now();
+      const dt = Math.max((now - lastMoveTimeRef.current) / 1000, 0.001);
+      const pointerDeltaX = world.x - lastPointerPosRef.current.x;
+      const pointerDeltaY = world.y - lastPointerPosRef.current.y;
+      
+      // Smooth velocity calculation (exponential moving average)
+      const alpha = 0.3; // Smoothing factor
+      velocityRef.current.x = velocityRef.current.x * (1 - alpha) + (pointerDeltaX / dt) * alpha;
+      velocityRef.current.y = velocityRef.current.y * (1 - alpha) + (pointerDeltaY / dt) * alpha;
+      
+      // Calculate rotation based on movement direction for natural follow-through
+      // Top leads, bottom follows - phone tilts in direction of movement
+      const movementDistance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+      const velocityMagnitude = Math.sqrt(velocityRef.current.x * velocityRef.current.x + velocityRef.current.y * velocityRef.current.y);
+      
+      let targetRotation = initialRotationRef.current;
+      
+      if (movementDistance > 5 && velocityMagnitude > 10) {
+        // Calculate movement direction
+        const movementAngle = Math.atan2(deltaY, deltaX);
+        
+        // For natural follow-through: phone tilts perpendicular to movement direction
+        // When moving right, phone tilts slightly clockwise (positive rotation)
+        // When moving left, phone tilts slightly counter-clockwise (negative rotation)
+        // Rotation is based on horizontal component of movement
+        const horizontalComponent = Math.cos(movementAngle);
+        
+        // Scale rotation based on velocity (stronger movement = more tilt)
+        // Max rotation ~0.15 radians (~8.6 degrees) for strong movements
+        const rotationScale = Math.min(velocityMagnitude / 300, 1);
+        const maxRotation = 0.15;
+        targetRotation = initialRotationRef.current + horizontalComponent * maxRotation * rotationScale;
+        
+        // Normalize rotation
+        while (targetRotation > Math.PI) targetRotation -= Math.PI * 2;
+        while (targetRotation < -Math.PI) targetRotation += Math.PI * 2;
+      }
+      
+      // Update position and rotation
+      updatePhoneTransform(newX, newY, targetRotation);
+      
+      // Update tracking refs
+      lastPointerPosRef.current = { x: world.x, y: world.y };
+      lastMoveTimeRef.current = now;
+      
+      // Track position for velocity calculation on release
+      lastMovePosRef.current = { x: newX, y: newY };
+    };
+    
+    const handleGlobalPointerUp = (e: PointerEvent) => {
+      if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
+      
+      if (isDraggingRef.current) {
+        isDraggingRef.current = false;
+        body.isDragging = false;
+        activePointerIdRef.current = null;
+        
+        // Release pointer capture
+        if (e.target instanceof HTMLElement && e.target.hasPointerCapture(e.pointerId)) {
+          e.target.releasePointerCapture(e.pointerId);
+        }
+        
+        // Calculate final velocity from last movement
+        const now = Date.now();
+        const dt = (now - lastMoveTimeRef.current) / 1000;
+        if (dt > 0 && dt < 0.1) {
+          body.vx = (livePosRef.current.x - lastMovePosRef.current.x) / dt;
+          body.vy = (livePosRef.current.y - lastMovePosRef.current.y) / dt;
+        }
+        
+        // Apply momentum damping
+        const scale = 0.3;
+        body.vx *= scale;
+        body.vy *= scale;
+        
+        // Sync final position
+        body.x = livePosRef.current.x;
+        body.y = livePosRef.current.y;
+        body.rotation = liveRotationRef.current;
+        
+        // Start auto-alignment animation to face forward
+        realignPhone();
+      }
+    };
+    
+    window.addEventListener("pointermove", handleGlobalPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleGlobalPointerUp);
+    window.addEventListener("pointercancel", handleGlobalPointerUp);
 
     return () => {
-      element.removeEventListener("mousedown", handleMouseDown);
-      window.removeEventListener("mousemove", handleGlobalMouseMove);
-      window.removeEventListener("mouseup", handleGlobalMouseUp);
+      window.removeEventListener("pointermove", handleGlobalPointerMove);
+      window.removeEventListener("pointerup", handleGlobalPointerUp);
+      window.removeEventListener("pointercancel", handleGlobalPointerUp);
+      
+      // Cancel any pending animation frames
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      if (alignmentAnimationRef.current !== null) {
+        cancelAnimationFrame(alignmentAnimationRef.current);
+        alignmentAnimationRef.current = null;
+      }
     };
-  }, [body, zoom, onUpdate, screenToWorld, tool]);
+  }, [body, zoom, onUpdate, screenToWorld, updatePhoneTransform, realignPhone]);
+
+  // Sync live position with body position when not dragging and not aligning
+  useEffect(() => {
+    if (!body.isDragging && alignmentAnimationRef.current === null && containerRef.current) {
+      containerRef.current.style.transform = `translate(${body.x}px, ${body.y}px) rotate(${body.rotation}rad)`;
+      livePosRef.current = { x: body.x, y: body.y };
+      liveRotationRef.current = body.rotation;
+    }
+  }, [body.x, body.y, body.rotation, body.isDragging]);
 
   return (
     <div
@@ -278,21 +353,61 @@ export function DraggablePhone({
         height: `${body.height}px`,
         transform: `translate(${body.x}px, ${body.y}px) rotate(${body.rotation}rad)`,
         transformOrigin: 'center center',
-        cursor: isDraggingRef.current ? "grabbing" : (tool === 'move' ? "grab" : "default"),
-        touchAction: "none",
-        userSelect: "none",
+        cursor: 'default',
         willChange: "transform",
-        transition: body.isDragging ? 'none' : 'transform 0.12s cubic-bezier(0.22, 1, 0.36, 1)',
-        pointerEvents: tool === 'interact' ? 'none' : 'auto',
-      }}
-      onClick={(e) => {
-        // Allow clicks to propagate to children
-        // Don't stop propagation here
+        transition: body.isDragging || alignmentAnimationRef.current !== null ? 'none' : 'transform 0.12s cubic-bezier(0.22, 1, 0.36, 1)',
+        pointerEvents: 'none',
       }}
     >
-      <div style={{ pointerEvents: 'auto' }}>
-        {children}
+      {/* Drag handle positioned above phone, outside bezel */}
+      <div
+        onPointerDown={handleHandlePointerDown}
+        className="absolute left-1/2 -translate-x-1/2 cursor-grab active:cursor-grabbing"
+        data-name="DragHandle"
+        style={{
+          width: '56px',
+          height: '56px',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          userSelect: 'none',
+          zIndex: 10000,
+          top: '-98px', // Position above the bezel with ~24px gap (bezel extends to -17.76px, handle is 56px tall, so handle bottom at -42px, gap = 24px)
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg
+          width="56"
+          height="56"
+          viewBox="0 0 28 28"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          preserveAspectRatio="xMidYMid meet"
+        >
+          {/* Up arrow */}
+          <path
+            d="M14 4L9 9H11V13H17V9H19L14 4Z"
+            fill="rgba(70, 70, 70, 0.85)"
+          />
+          {/* Down arrow */}
+          <path
+            d="M14 24L19 19H17V15H11V19H9L14 24Z"
+            fill="rgba(70, 70, 70, 0.85)"
+          />
+          {/* Left arrow */}
+          <path
+            d="M4 14L9 9V11H13V17H9V19L4 14Z"
+            fill="rgba(70, 70, 70, 0.85)"
+          />
+          {/* Right arrow */}
+          <path
+            d="M24 14L19 19V17H15V11H19V9L24 14Z"
+            fill="rgba(70, 70, 70, 0.85)"
+          />
+        </svg>
       </div>
+      {children}
     </div>
   );
 }

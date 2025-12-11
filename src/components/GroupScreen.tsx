@@ -14,7 +14,6 @@ export function BackButton({ onClick, tool }: { onClick: () => void; tool: 'move
       className="relative size-[33.93px] cursor-pointer" 
       data-name="back-button"
       onClick={(e) => {
-        if (tool !== 'interact') return;
         e.stopPropagation();
         onClick();
       }}
