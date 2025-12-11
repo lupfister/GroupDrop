@@ -698,15 +698,6 @@ function Screen({
   // Filter out recently removed phones from allConfirmedPhones
   const allConfirmedPhonesFiltered = allConfirmedPhones.filter(phone => !recentlyRemovedPhones?.has(phone.id));
   
-  // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
-  // Prioritize potential group: if in a potential group, show that; otherwise show confirmed group if it exists
-  const shouldShowUnifiedView = hasNearbyPhones || 
-    phonePotentialGroup ||
-    phoneConfirmedGroup ||
-    (viewState === 'groupConfirm' && (phonePotentialGroup || phoneConfirmedGroup)) ||
-    (viewState === 'groupSearch' && phonePotentialGroup);
-  const extraConfirmedPhones = allConfirmedPhonesFiltered.filter(phone => phone.id !== body.id);
-  
   // Get unconfirmed phones: ALWAYS show ALL unconfirmed members from the potential group
   // This should work regardless of whether we're in a potential group, confirmed group, or groupConfirm state
   // The key is to find the potential group that contains this phone or corresponds to the confirmed group
@@ -812,7 +803,6 @@ function Screen({
     (viewState === 'groupSearch' && phonePotentialGroup)
   );
   const extraConfirmedPhones = allConfirmedPhonesFiltered.filter(phone => phone.id !== body.id);
->>>>>>> swipe-remove
   const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
   const notificationHeight = '140px';
   const isHomeNotification = viewState === 'homeScreen';

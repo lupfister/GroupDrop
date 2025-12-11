@@ -1021,7 +1021,6 @@ export default function Desktop() {
               newGroups.delete(id);
             }
           });
-          });
         }
       }
     }
@@ -1389,7 +1388,6 @@ export default function Desktop() {
                   </div>
                 )}
               </div>
->>>>>>> swipe-remove
             </div>
           </div>
         </div>
