@@ -13,6 +13,7 @@ interface GroupsHistoryProps {
   allBodies: RigidBody[];
   onBack: () => void;
   tool: 'move' | 'interact';
+  recentlyRemovedPhones?: Set<number>;
 }
 
 function HomeIndicator() {
@@ -78,7 +79,7 @@ function StatusBar() {
   );
 }
 
-export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool }: GroupsHistoryProps) {
+export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recentlyRemovedPhones }: GroupsHistoryProps) {
   const groupsArray = Array.from(confirmedGroups.values());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   
@@ -203,6 +204,56 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool }: Grou
                 </div>
               );
             })}
+          </div>
+        )}
+        
+        {/* Recently Removed Phones Section */}
+        {recentlyRemovedPhones && recentlyRemovedPhones.size > 0 && (
+          <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
+            <p className="font-['SF_Pro:Semibold',sans-serif] font-[590] text-[14px] text-white/60 mb-3" style={{ fontVariationSettings: "'wdth' 100" }}>
+              Recently Removed Phones
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {Array.from(recentlyRemovedPhones).map((phoneId) => {
+                const phone = allBodies.find(b => b.id === phoneId);
+                return (
+                  <div
+                    key={phoneId}
+                    className="bg-[#333333] p-3"
+                    style={{
+                      borderRadius: '12px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                    }}
+                  >
+                    {phone && (
+                      <div
+                        className="rounded-full overflow-hidden"
+                        style={{
+                          width: '24px',
+                          height: '24px',
+                        }}
+                      >
+                        <img
+                          alt=""
+                          className="w-full h-full object-cover"
+                          src={phone.profileImage}
+                        />
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <p className="font-['SF_Pro:Regular',sans-serif] font-normal text-[12px] text-white/80" style={{ fontVariationSettings: "'wdth' 100" }}>
+                        Phone {phoneId}
+                      </p>
+                      <p className="font-['SF_Pro:Regular',sans-serif] font-normal text-[10px] text-white/50 mt-0.5" style={{ fontVariationSettings: "'wdth' 100" }}>
+                        Removed - must move away to rejoin
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
