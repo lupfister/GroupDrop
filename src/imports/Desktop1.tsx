@@ -415,13 +415,17 @@ export default function Desktop() {
   }, [zoom]);
 
   const addPhone = () => {
-    // Spawn in center of current viewport (scaled by zoom)
-    const viewportWidth = window.innerWidth / zoom;
-    const viewportHeight = window.innerHeight / zoom;
+    // Get center of viewport in screen coordinates
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
     
-    // Random position in center area
-    const x = viewportWidth / 2 - phoneWidth / 2 + (Math.random() - 0.5) * 200;
-    const y = viewportHeight / 2 - phoneHeight / 2 + (Math.random() - 0.5) * 200;
+    // Convert screen center to world/canvas coordinates
+    const worldCenterX = (centerX - panX) / zoom;
+    const worldCenterY = (centerY - panY) / zoom;
+    
+    // Spawn at center with small random offset
+    const x = worldCenterX - phoneWidth / 2 + (Math.random() - 0.5) * 200;
+    const y = worldCenterY - phoneHeight / 2 + (Math.random() - 0.5) * 200;
     
     const newBody: RigidBody = {
       id: nextIdRef.current,
