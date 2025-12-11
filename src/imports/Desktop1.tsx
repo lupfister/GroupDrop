@@ -163,6 +163,7 @@ export default function Desktop() {
   const [isPanning, setIsPanning] = useState(false);
   const bodiesRef = useRef<RigidBody[]>([]);
   const frameCountRef = useRef(0);
+  const calculateProximityDataRef = useRef<((body: RigidBody) => ProximityData[]) | null>(null);
   
   // Pool of profile images to cycle through
   const profileImages = [
@@ -310,6 +311,38 @@ export default function Desktop() {
       frameCountRef.current++;
       if (frameCountRef.current % 10 === 0) {
         updatePotentialGroups();
+        
+        // Clear "recently removed" flags when phones move away from proximity
+        // This runs in the physics loop to ensure it checks proximity every frame
+        if (recentlyRemovedPhonesRef.current.size > 0 && calculateProximityDataRef.current) {
+          const phonesToClear = new Set<number>();
+          
+          recentlyRemovedPhonesRef.current.forEach(phoneId => {
+            const phone = bodiesRef.current.find(b => b.id === phoneId);
+            if (phone) {
+              const proximityData = calculateProximityDataRef.current!(phone);
+              // Reduced threshold: phone only needs to move slightly away (6.5cm instead of 8.5cm)
+              // to clear the recently removed flag
+              const hasNearby = proximityData.some(data => data.distanceCm <= 6.5);
+              // If phone is no longer in proximity, mark for clearing
+              if (!hasNearby) {
+                phonesToClear.add(phoneId);
+              }
+            } else {
+              // If phone doesn't exist anymore, also clear the flag
+              phonesToClear.add(phoneId);
+            }
+          });
+          
+          if (phonesToClear.size > 0) {
+            setRecentlyRemovedPhones(prev => {
+              const next = new Set(prev);
+              phonesToClear.forEach(phoneId => next.delete(phoneId));
+              recentlyRemovedPhonesRef.current = next; // Update ref immediately
+              return next;
+            });
+          }
+        }
       }
       
       forceUpdate(prev => prev + 1);
@@ -331,7 +364,9 @@ export default function Desktop() {
       const phone = bodiesRef.current.find(b => b.id === phoneId);
       if (phone) {
         const proximityData = calculateProximityData(phone);
-        const hasNearby = proximityData.some(data => data.distanceCm <= 8.5);
+        // Reduced threshold: phone only needs to move slightly away (6.5cm instead of 8.5cm)
+        // to clear the recently removed flag
+        const hasNearby = proximityData.some(data => data.distanceCm <= 6.5);
         // If phone is no longer in proximity, mark for clearing
         // This allows them to see notifications again when they return
         if (!hasNearby) {
@@ -367,7 +402,8 @@ export default function Desktop() {
         const phone = bodiesRef.current.find(b => b.id === phoneId);
         if (phone) {
           const proximityData = calculateProximityData(phone);
-          const hasNearby = proximityData.some(data => data.distanceCm <= 8.5);
+          // Use same reduced threshold (6.5cm) for consistency
+          const hasNearby = proximityData.some(data => data.distanceCm <= 6.5);
           if (hasNearby) {
             anyInProximity = true;
             break;
@@ -1151,6 +1187,9 @@ export default function Desktop() {
     
     return proximityList;
   };
+  
+  // Store function in ref for access in physics loop
+  calculateProximityDataRef.current = calculateProximityData;
 
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'fixed', top: 0, left: 0 }}>
@@ -1315,6 +1354,9 @@ export default function Desktop() {
                 )}
               </div>
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 36db91d (fixed rejoining function)
               
               {/* Recently Removed Phones */}
               <div>
