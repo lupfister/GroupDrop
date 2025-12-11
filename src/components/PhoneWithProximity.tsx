@@ -189,6 +189,8 @@ function Screen({
   const [viewState, setViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
   // Track which group's screen is currently being viewed (each group has its own unique screen)
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  // Store member IDs of the active potential group to detect transition to confirmed
+  const activePotentialGroupMembersRef = useRef<Set<number> | null>(null);
   const swipeStartRef = useRef<{ y: number; time: number; x: number } | null>(null);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -202,8 +204,9 @@ function Screen({
   const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', groupId?: string | null) => {
     setViewState(nextState);
     // Update active group ID when entering a group screen
-    if (nextState === 'groupConfirm' && groupId) {
-      setActiveGroupId(groupId);
+    if (nextState === 'groupConfirm') {
+      // Always update activeGroupId for groupConfirm - set to groupId if provided, otherwise clear to null
+      setActiveGroupId(groupId || null);
     } else if (nextState === 'homeScreen' || nextState === 'groupsHistory') {
       // Clear active group when going home or viewing history (allows forming new groups)
       setActiveGroupId(null);
@@ -520,6 +523,21 @@ function Screen({
   const activePotentialGroup = activeGroupId && phonePotentialGroup && phonePotentialGroup.id === activeGroupId
     ? phonePotentialGroup
     : null;
+
+  // Store member IDs when viewing a potential group (for Bug 2 fix)
+  useEffect(() => {
+    if (activePotentialGroup) {
+      // Store member IDs when actively viewing a potential group
+      activePotentialGroupMembersRef.current = new Set(activePotentialGroup.memberIds);
+    } else if (activeGroupId && activeGroupId.startsWith('potential-')) {
+      // We're viewing a potential group by ID, but it's not in the potentialGroups map anymore
+      // Keep the stored members so we can find the matching confirmed group
+      // Don't clear here - let the transition useEffect handle it after finding the confirmed group
+    } else if (!activeGroupId || !activeGroupId.startsWith('potential-')) {
+      // Not viewing a potential group (or viewing a confirmed group) - clear stored members
+      activePotentialGroupMembersRef.current = null;
+    }
+  }, [activePotentialGroup, activeGroupId]);
   
   // Check if currently viewing a specific group's screen
   const isViewingSpecificGroup = activeGroupId !== null;
@@ -636,6 +654,39 @@ function Screen({
       return () => clearTimeout(timeout);
     }
   }, [unconfirmedNearbyPhones.length, viewState]);
+
+  // Bug 2 Fix: Update activeGroupId when a potential group transitions to confirmed
+  // When a potential group becomes confirmed, it gets a new sequential ID (e.g., "potential-1" -> "1")
+  // We need to update activeGroupId to match the new confirmed group ID
+  useEffect(() => {
+    // Only check if we're currently viewing a potential group (by ID pattern) and have stored member IDs
+    if (!activeGroupId || !activeGroupId.startsWith('potential-') || !activePotentialGroupMembersRef.current) {
+      return;
+    }
+
+    // Check if the potential group we're viewing still exists
+    const potentialGroupStillExists = potentialGroups?.has(activeGroupId);
+    
+    // If the potential group no longer exists, it may have transitioned to confirmed
+    if (!potentialGroupStillExists && confirmedGroups) {
+      // Find a confirmed group with the same members as the potential group we were viewing
+      const potentialGroupMembers = activePotentialGroupMembersRef.current;
+      
+      for (const [confirmedGroupId, confirmedGroup] of confirmedGroups.entries()) {
+        // Check if members match (same size and all members present)
+        if (
+          confirmedGroup.memberIds.size === potentialGroupMembers.size &&
+          Array.from(potentialGroupMembers).every(id => confirmedGroup.memberIds.has(id))
+        ) {
+          // Found matching confirmed group - update activeGroupId
+          setActiveGroupId(confirmedGroupId);
+          // Clear the stored member IDs since we've transitioned to confirmed
+          activePotentialGroupMembersRef.current = null;
+          break;
+        }
+      }
+    }
+  }, [activeGroupId, potentialGroups, confirmedGroups]);
   
   return (
     <div 
