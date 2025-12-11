@@ -598,17 +598,33 @@ function Screen({
   // Split into confirmed and unconfirmed
   const confirmedNearbyPhones = nearbyPhones.filter(phone => confirmedPhones?.has(phone.id));
   
-  // Find which potential group this phone belongs to (if any)
-  const phonePotentialGroup = potentialGroups 
-    ? Array.from(potentialGroups.values()).find(group => group.memberIds.has(body.id))
-    : undefined;
-  
-  // Find which confirmed group this phone belongs to (if any)
+  // Find which confirmed group this phone belongs to (if any) - check this first
   const phoneConfirmedGroup = confirmedGroups 
     ? Array.from(confirmedGroups.values()).find(group => group.memberIds.has(body.id))
     : undefined;
   
-<<<<<<< HEAD
+  // Find which potential group this phone belongs to (if any)
+  // This should find the potential group that contains this phone OR corresponds to the confirmed group
+  // The potential group will still exist as long as not all members have confirmed
+  const phonePotentialGroup = potentialGroups 
+    ? Array.from(potentialGroups.values()).find(group => {
+        // First check: is this phone directly in the potential group?
+        if (group.memberIds.has(body.id)) return true;
+        
+        // Second check: if we're in a confirmed group, find the potential group that contains all confirmed members
+        // This is the same group, just with some members now confirmed
+        if (phoneConfirmedGroup) {
+          const potentialMemberIds = Array.from(group.memberIds);
+          const confirmedMemberIds = Array.from(phoneConfirmedGroup.memberIds);
+          // If all confirmed members are in this potential group, it's the same group
+          // (the potential group should have the same or more members)
+          return confirmedMemberIds.every(id => potentialMemberIds.includes(id));
+        }
+        
+        return false;
+      })
+    : undefined;
+  
   // Priority logic: Each group has its own unique screen instance
   // 1. If viewing a specific confirmed group's screen (activeGroupId matches): lock to that confirmed group view
   // 2. If viewing a specific potential group's screen (activeGroupId matches): show that potential group view
@@ -649,32 +665,6 @@ function Screen({
   // Check if phone has confirmed in a potential group (new group being formed)
   const hasConfirmedInPotentialGroup = phonePotentialGroup && phonePotentialGroup.confirmedIds.has(body.id);
   
-  // Get unconfirmed phones: show based on which group's screen is active
-  const unconfirmedNearbyPhones = isViewingConfirmedGroupScreen
-    ? [] // Viewing a confirmed group's screen: don't show any "Waiting for Others..."
-    : isViewingPotentialGroupScreen
-      ? Array.from(activePotentialGroup.memberIds)
-          .filter(id => !activePotentialGroup.confirmedIds.has(id) && id !== body.id)
-          .map(id => allBodies.find(b => b.id === id))
-          .filter((phone): phone is RigidBody => phone !== undefined)
-      : hasConfirmedInPotentialGroup && !isViewingSpecificGroup
-        ? Array.from(phonePotentialGroup.memberIds)
-            .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
-            .map(id => allBodies.find(b => b.id === id))
-            .filter((phone): phone is RigidBody => phone !== undefined)
-        : phonePotentialGroup && !isViewingSpecificGroup
-          ? Array.from(phonePotentialGroup.memberIds)
-              .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id)
-              .map(id => allBodies.find(b => b.id === id))
-              .filter((phone): phone is RigidBody => phone !== undefined)
-          : phoneConfirmedGroup && !isViewingSpecificGroup
-            ? [] // Fully confirmed group (no active potential group): don't show any "Waiting for Others..."
-            : nearbyPhones.filter(phone => {
-                const isConfirmed = confirmedPhones?.has(phone.id);
-                const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
-                return !isConfirmed && isInGroupSearch;
-              });
-  
   // Get all confirmed phones: show based on which group's screen is active
   // IMPORTANT: For confirmed groups, always use locked-in members regardless of proximity
   const allConfirmedPhones = isViewingConfirmedGroupScreen
@@ -708,20 +698,99 @@ function Screen({
   // Filter out recently removed phones from allConfirmedPhones
   const allConfirmedPhonesFiltered = allConfirmedPhones.filter(phone => !recentlyRemovedPhones?.has(phone.id));
   
-  // Get unconfirmed phones: if in a potential group, get members who haven't confirmed;
-  // otherwise, use proximity-based unconfirmed phones
-  // Filter out recently removed users so their icons don't appear on any device
-  const unconfirmedNearbyPhones = phonePotentialGroup
-    ? Array.from(phonePotentialGroup.memberIds)
-        .filter(id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id && !recentlyRemovedPhones?.has(id))
+  // Get unconfirmed phones: ALWAYS show ALL unconfirmed members from the potential group
+  // This should work regardless of whether we're in a potential group, confirmed group, or groupConfirm state
+  // The key is to find the potential group that contains this phone or corresponds to the confirmed group
+  // and show ALL unconfirmed members from it simultaneously
+  // But also respect the viewing-specific-group logic from HEAD
+  const unconfirmedNearbyPhones = (() => {
+    // Helper function to get all unconfirmed members from a potential group
+    const getUnconfirmedFromGroup = (potentialGroup: PotentialGroup): RigidBody[] => {
+      return Array.from(potentialGroup.memberIds)
+        .filter(id => {
+          // Include if: not confirmed, not this phone, not recently removed, and exists in allBodies
+          return !potentialGroup.confirmedIds.has(id) && 
+                 id !== body.id && 
+                 !recentlyRemovedPhones?.has(id) &&
+                 allBodies.some(b => b.id === id);
+        })
         .map(id => allBodies.find(b => b.id === id))
-        .filter((phone): phone is RigidBody => phone !== undefined)
-    : nearbyPhones.filter(phone => {
+        .filter((phone): phone is RigidBody => phone !== undefined);
+    };
+    
+    // Strategy 1: If we found a potential group for this phone, use it directly
+    if (phonePotentialGroup) {
+      return getUnconfirmedFromGroup(phonePotentialGroup);
+    }
+    
+    // Strategy 2: If we're in groupConfirm or groupSearch state, aggressively find the potential group
+    // This ensures we show all unconfirmed members even if phonePotentialGroup wasn't found initially
+    if ((viewState === 'groupConfirm' || viewState === 'groupSearch') && potentialGroups) {
+      // First, try to find a potential group that contains this phone
+      for (const [groupId, potentialGroup] of potentialGroups) {
+        if (potentialGroup.memberIds.has(body.id)) {
+          const unconfirmed = getUnconfirmedFromGroup(potentialGroup);
+          if (unconfirmed.length > 0) {
+            return unconfirmed;
+          }
+        }
+      }
+      
+      // Second, if in a confirmed group, find the potential group that corresponds to it
+      // The potential group should contain all the confirmed members (it's the same group before confirmation)
+      if (phoneConfirmedGroup) {
+        const confirmedMemberIds = Array.from(phoneConfirmedGroup.memberIds);
+        
+        for (const [groupId, potentialGroup] of potentialGroups) {
+          const potentialMemberIds = Array.from(potentialGroup.memberIds);
+          
+          // Check if this potential group contains all confirmed members
+          // This means it's the same group, just with some members now confirmed
+          const containsAllConfirmed = confirmedMemberIds.every(id => potentialMemberIds.includes(id));
+          
+          if (containsAllConfirmed) {
+            const unconfirmed = getUnconfirmedFromGroup(potentialGroup);
+            if (unconfirmed.length > 0) {
+              return unconfirmed;
+            }
+          }
+        }
+      }
+    }
+    
+    // Strategy 3: If in a confirmed group (but not in groupConfirm/groupSearch), still try to find potential group
+    if (phoneConfirmedGroup && potentialGroups) {
+      const confirmedMemberIds = Array.from(phoneConfirmedGroup.memberIds);
+      
+      for (const [groupId, potentialGroup] of potentialGroups) {
+        const potentialMemberIds = Array.from(potentialGroup.memberIds);
+        
+        // Check if this potential group contains all confirmed members
+        const containsAllConfirmed = confirmedMemberIds.every(id => potentialMemberIds.includes(id));
+        
+        if (containsAllConfirmed) {
+          const unconfirmed = getUnconfirmedFromGroup(potentialGroup);
+          if (unconfirmed.length > 0) {
+            return unconfirmed;
+          }
+        }
+      }
+    }
+    
+    // Last resort: use proximity-based unconfirmed phones (only if not in groupConfirm/groupSearch)
+    // This should rarely be used since we should always have potential group data
+    if (viewState !== 'groupConfirm' && viewState !== 'groupSearch') {
+      return nearbyPhones.filter(phone => {
         const isConfirmed = confirmedPhones?.has(phone.id);
         const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
         const isRemoved = recentlyRemovedPhones?.has(phone.id);
         return !isConfirmed && isInGroupSearch && !isRemoved;
       });
+    }
+    
+    // If we couldn't find any unconfirmed members, return empty
+    return [];
+  })();
   
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
   // But hide it completely if user was recently removed (they should be in zero state with no notification)
@@ -1083,8 +1152,23 @@ function Screen({
 
               {/* All confirmed users filling the gray circle in groupConfirm */}
               {viewState === 'groupConfirm' &&
-                allConfirmedPhonesFiltered.map((user, index) => {
-                  const totalCircles = allConfirmedPhonesFiltered.length;
+                (() => {
+                  // Show up to 3 users in the group icon
+                  // If there are more than 3 users total, exclude the device's own user and show other users
+                  let usersToDisplay: RigidBody[];
+                  
+                  if (allConfirmedPhonesFiltered.length <= 3) {
+                    // 3 or fewer users: show all (including device's own user)
+                    usersToDisplay = allConfirmedPhonesFiltered;
+                  } else {
+                    // More than 3 users: exclude device's own user and show up to 3 other users
+                    const otherUsers = allConfirmedPhonesFiltered.filter(phone => phone.id !== body.id);
+                    usersToDisplay = otherUsers.slice(0, 3);
+                  }
+                  
+                  return usersToDisplay.map((user, index) => {
+                    const totalCircles = usersToDisplay.length;
+>>>>>>> 7515cc8 (updated logic for confirming phones and potential group database)
                   const centerX = 24; // center of 48px container
                   const centerY = 24;
                   const containerRadius = 24;
@@ -1145,7 +1229,8 @@ function Screen({
                       />
                     </div>
                   );
-                })}
+                  });
+                })()}
           </div>
           
           {/* Nearby phone profiles - positioned based on proximity data.

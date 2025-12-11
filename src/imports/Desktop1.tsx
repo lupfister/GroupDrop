@@ -274,91 +274,6 @@ export default function Desktop() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
 
-  // Get all phone IDs that are in confirmed groups (should not adjust based on proximity)
-  const getPhonesInConfirmedGroups = (): Set<number> => {
-    const phonesInConfirmedGroups = new Set<number>();
-    confirmedGroupsRef.current.forEach(group => {
-      group.memberIds.forEach(id => phonesInConfirmedGroups.add(id));
-    });
-    return phonesInConfirmedGroups;
-  };
-
-  // Clear "recently removed" flag when users move AWAY from proximity
-  // This allows notifications to reappear when they come back into proximity
-  // This function is called from the physics loop to check proximity frequently
-  const clearRecentlyRemovedFlagsOnProximity = () => {
-    if (recentlyRemovedPhonesRef.current.size === 0) return;
-    
-    const phonesToClear = new Set<number>();
-    const phonesInConfirmedGroups = getPhonesInConfirmedGroups();
-    const PROXIMITY_THRESHOLD_CM = 8.5;
-    
-    recentlyRemovedPhonesRef.current.forEach(phoneId => {
-      const phone = bodiesRef.current.find(b => b.id === phoneId);
-      if (!phone) {
-        // If phone doesn't exist anymore, clear the flag
-        phonesToClear.add(phoneId);
-        return;
-      }
-      
-      // Skip if phone is in a confirmed group
-      if (phonesInConfirmedGroups.has(phoneId)) {
-        return;
-      }
-      
-      // Check if this recently removed phone is NO LONGER in proximity with any non-recently-removed phone
-      // We need to calculate this manually since calculateProximityData filters out recently removed phones
-      const centerX = phone.x + phone.width / 2;
-      const centerY = phone.y + phone.height / 2;
-      
-      let hasNearbyNonRemovedPhone = false;
-      
-      for (const otherBody of bodiesRef.current) {
-        if (otherBody.id === phoneId) continue;
-        
-        // Skip phones that are in confirmed groups
-        if (phonesInConfirmedGroups.has(otherBody.id)) continue;
-        
-        // Skip other recently removed phones - we want to detect proximity with non-removed phones
-        if (recentlyRemovedPhonesRef.current.has(otherBody.id)) continue;
-        
-        const otherCenterX = otherBody.x + otherBody.width / 2;
-        const otherCenterY = otherBody.y + otherBody.height / 2;
-        
-        const dx = otherCenterX - centerX;
-        const dy = otherCenterY - centerY;
-        const distancePx = Math.sqrt(dx * dx + dy * dy);
-        
-        // Calculate edge-to-edge distance
-        const edgeDistancePx = Math.max(0, distancePx - (phone.width / 2) - (otherBody.width / 2));
-        const rawDistanceCm = edgeDistancePx * 0.0125;
-        const distanceCm = Math.max(2, rawDistanceCm);
-        
-        // If this recently removed phone is still in proximity with a non-removed phone, keep the flag
-        if (distanceCm <= PROXIMITY_THRESHOLD_CM) {
-          hasNearbyNonRemovedPhone = true;
-          break;
-        }
-      }
-      
-      // Clear the flag when they move AWAY from proximity (no longer near any non-removed phones)
-      // This allows notifications to reappear when they come back into proximity
-      if (!hasNearbyNonRemovedPhone) {
-        phonesToClear.add(phoneId);
-      }
-    });
-    
-    if (phonesToClear.size > 0) {
-      setRecentlyRemovedPhones(prev => {
-        const next = new Set(prev);
-        phonesToClear.forEach(phoneId => next.delete(phoneId));
-        recentlyRemovedPhonesRef.current = next; // Update ref immediately
-        console.log('🧹 Cleared from recentlyRemovedPhones (moved away):', Array.from(phonesToClear));
-        return next;
-      });
-    }
-  };
-
   // Physics loop
   useEffect(() => {
     const physicsLoop = () => {
@@ -395,8 +310,6 @@ export default function Desktop() {
       frameCountRef.current++;
       if (frameCountRef.current % 10 === 0) {
         updatePotentialGroups();
-        // Also check if recently removed phones have come back into proximity
-        clearRecentlyRemovedFlagsOnProximity();
       }
       
       forceUpdate(prev => prev + 1);
@@ -407,35 +320,65 @@ export default function Desktop() {
     return () => clearInterval(interval);
   }, [zoom]);
   
-  // Also clear "recently removed" flags when all potential groups are deleted AND all users have moved away
+  // Clear "recently removed" flag when users move away from proximity
+  // This allows notifications to reappear when they come back into proximity
+  useEffect(() => {
+    if (recentlyRemovedPhones.size === 0) return;
+    
+    const phonesToClear = new Set<number>();
+    
+    recentlyRemovedPhones.forEach(phoneId => {
+      const phone = bodiesRef.current.find(b => b.id === phoneId);
+      if (phone) {
+        const proximityData = calculateProximityData(phone);
+        const hasNearby = proximityData.some(data => data.distanceCm <= 8.5);
+        // If phone is no longer in proximity, mark for clearing
+        // This allows them to see notifications again when they return
+        if (!hasNearby) {
+          phonesToClear.add(phoneId);
+        }
+      } else {
+        // If phone doesn't exist anymore, also clear the flag
+        phonesToClear.add(phoneId);
+      }
+    });
+    
+    if (phonesToClear.size > 0) {
+      setRecentlyRemovedPhones(prev => {
+        const next = new Set(prev);
+        phonesToClear.forEach(phoneId => next.delete(phoneId));
+        recentlyRemovedPhonesRef.current = next; // Update ref immediately
+        return next;
+      });
+    }
+  }, [recentlyRemovedPhones, forceUpdate]); // Re-run when recentlyRemovedPhones changes or when forceUpdate triggers
+  
+  // Also clear "recently removed" flags when all potential groups are deleted
   // This ensures that when all users exit GroupDrop (move away from each other),
   // all flags are cleared so notifications can reappear when they return
-  // IMPORTANT: Don't clear immediately when groups are deleted due to removal - only clear when users actually move away
   useEffect(() => {
     // If there are no potential groups and there are recently removed phones,
-    // check if any phones are actually in proximity
-    // Only clear flags if NO phones are in proximity (all users have moved away)
+    // clear all flags since all users have moved away
     if (potentialGroups.size === 0 && recentlyRemovedPhones.size > 0) {
-      // Check if ANY phones (not just recently removed ones) are in proximity with each other
-      // If no phones are in proximity, clear all flags
+      // Check if any phones are actually in proximity
+      // If not, clear all flags
       let anyInProximity = false;
-      
-      // Check all phones, not just recently removed ones
-      for (const body of bodiesRef.current) {
-        const proximityData = calculateProximityData(body);
-        const hasNearby = proximityData.some(data => data.distanceCm <= 8.5);
-        if (hasNearby) {
-          anyInProximity = true;
-          break;
+      for (const phoneId of recentlyRemovedPhones) {
+        const phone = bodiesRef.current.find(b => b.id === phoneId);
+        if (phone) {
+          const proximityData = calculateProximityData(phone);
+          const hasNearby = proximityData.some(data => data.distanceCm <= 8.5);
+          if (hasNearby) {
+            anyInProximity = true;
+            break;
+          }
         }
       }
       
-      // Only clear flags if NO phones are in proximity (all users have moved away from each other)
-      // Don't clear if phones are still in proximity (they were just removed from groups)
+      // If no phones are in proximity, clear all flags
       if (!anyInProximity) {
         setRecentlyRemovedPhones(new Set());
         recentlyRemovedPhonesRef.current = new Set();
-        console.log('🧹 Cleared all recentlyRemovedPhones (all users moved away)');
       }
     }
   }, [potentialGroups, recentlyRemovedPhones, forceUpdate]);
@@ -725,8 +668,6 @@ export default function Desktop() {
     // Don't allow removing yourself
     if (removerPhoneId === targetPhoneId) return;
     
-    console.log('🗑️ REMOVING USER:', { removerPhoneId, targetPhoneId });
-    
     // First, mark the removed user to suppress notifications temporarily
     // This flag will be cleared when they move away from proximity
     // IMPORTANT: Set this BEFORE resetting view state to prevent notification from showing
@@ -735,7 +676,6 @@ export default function Desktop() {
       const next = new Set(prev);
       next.add(targetPhoneId);
       recentlyRemovedPhonesRef.current = next; // Update ref immediately
-      console.log('✅ Added to recentlyRemovedPhones:', Array.from(next));
       return next;
     });
     
@@ -749,19 +689,15 @@ export default function Desktop() {
     // This works for groups of any size:
     // - If group has 3+ members, it will continue to exist with remaining members
     // - If group has only 2 members, it will be deleted (both users lose the group)
-    // IMPORTANT: Remove the target user from ALL groups, not just groups containing the remover
-    // This prevents the removed user from appearing in any groups
     let groupWasDeleted = false;
     let originalGroupSize = 0;
     setPotentialGroups(prev => {
       const next = new Map(prev);
       next.forEach((group, groupId) => {
-        // Check if target is in this group (regardless of whether remover is also in it)
-        if (group.memberIds.has(targetPhoneId)) {
-          // Store original group size if both remover and target are in the group
-          if (group.memberIds.has(removerPhoneId) && group.memberIds.has(targetPhoneId)) {
-            originalGroupSize = group.memberIds.size;
-          }
+        // Check if both the remover and target are in this group
+        if (group.memberIds.has(removerPhoneId) && group.memberIds.has(targetPhoneId)) {
+          // Store original group size to determine if both should be marked as recently removed
+          originalGroupSize = group.memberIds.size;
           
           // Remove target from memberIds
           const newMemberIds = new Set(group.memberIds);
@@ -776,10 +712,7 @@ export default function Desktop() {
           // Otherwise, keep the group with remaining members (works for 3+ member groups)
           if (newMemberIds.size < 2) {
             next.delete(groupId);
-            // Only mark as deleted if this was the group containing both remover and target
-            if (group.memberIds.has(removerPhoneId)) {
-              groupWasDeleted = true;
-            }
+            groupWasDeleted = true;
           } else {
             // Group continues to exist with remaining members
             // All other users in the group remain in their current state
@@ -806,9 +739,15 @@ export default function Desktop() {
       handleUnconfirm(removerPhoneId);
       handleGroupSearchStateChange(removerPhoneId, false);
       
-      // Only the removed user (targetPhoneId) should be marked as recently removed
-      // The remover should return to home screen but can still see notifications when coming back into proximity
-      // The targetPhoneId is already marked as recently removed above, so no need to add it again
+      // Mark both the remover and removed user as recently removed temporarily to suppress notifications
+      // This ensures both users are in the same state and can see notifications again when they return
+      setRecentlyRemovedPhones(prev => {
+        const next = new Set(prev);
+        next.add(removerPhoneId);
+        next.add(targetPhoneId); // Ensure target is also marked (already added above, but being explicit)
+        recentlyRemovedPhonesRef.current = next; // Update ref immediately
+        return next;
+      });
     } else {
       // Group still exists (3+ members), keep remover in groupSearch if they're still in proximity
       const removerBody = bodiesRef.current.find(b => b.id === removerPhoneId);
@@ -821,6 +760,15 @@ export default function Desktop() {
         }
       }
     }
+  };
+
+  // Get all phone IDs that are in confirmed groups (should not adjust based on proximity)
+  const getPhonesInConfirmedGroups = (): Set<number> => {
+    const phonesInConfirmedGroups = new Set<number>();
+    confirmedGroupsRef.current.forEach(group => {
+      group.memberIds.forEach(id => phonesInConfirmedGroups.add(id));
+    });
+    return phonesInConfirmedGroups;
   };
 
   // Update potential groups based on current proximity
@@ -979,39 +927,63 @@ export default function Desktop() {
             continue;
           }
           
-          // Create or update potential group
-          const memberIds = Array.from(filteredComponent).sort((a, b) => a - b);
-          const groupKey = memberIds.join(',');
+          // Find existing groups that overlap with this component (have at least one member in common)
+          // This ensures all phones in proximity are included in the same group
+          const overlappingGroupIds: string[] = [];
+          const allMergedMemberIds = new Set(filteredComponent);
+          const allMergedConfirmedIds = new Set<number>();
           
-          // Try to find existing group with same members
-          let existingGroupId: string | null = null;
           potentialGroupsRef.current.forEach((group, groupId) => {
-            const existingMembers = Array.from(group.memberIds).sort((a, b) => a - b);
-            if (existingMembers.join(',') === groupKey) {
-              existingGroupId = groupId;
+            const existingMembers = Array.from(group.memberIds);
+            // Check if this group overlaps with the new component (has at least one member in common)
+            const hasOverlap = existingMembers.some(id => filteredComponent.has(id));
+            
+            if (hasOverlap) {
+              overlappingGroupIds.push(groupId);
+              // Merge members from overlapping group
+              existingMembers.forEach(id => allMergedMemberIds.add(id));
+              // Merge confirmed IDs from overlapping group
+              Array.from(group.confirmedIds).forEach(id => allMergedConfirmedIds.add(id));
             }
           });
           
-          const groupId = existingGroupId || `potential-${nextGroupIdRef.current++}`;
+          // Use the first overlapping group's ID, or create a new one
+          const groupId = overlappingGroupIds.length > 0 
+            ? overlappingGroupIds[0] 
+            : `potential-${nextGroupIdRef.current++}`;
+          
+          // Get the existing group if it exists
           const existingGroup = potentialGroupsRef.current.get(groupId);
           
-<<<<<<< HEAD
-          // Only preserve confirmedIds if exact same members are still in proximity AND member set hasn't changed
-          // Also filter out recently removed phones from confirmedIds
-          const memberSetUnchanged = existingGroup && 
-            existingGroup.memberIds.size === filteredComponent.size &&
-            Array.from(existingGroup.memberIds).every(id => filteredComponent.has(id));
+          // Ensure we don't include any recently removed phones
+          const cleanMemberIds = new Set(
+            Array.from(allMergedMemberIds).filter(id => !recentlyRemovedPhonesRef.current.has(id))
+          );
           
-          const cleanConfirmedIds = existingGroup && memberSetUnchanged && areMembersInProximity(existingGroup.memberIds)
-            ? new Set(
-                Array.from(existingGroup.confirmedIds).filter(id => !recentlyRemovedPhonesRef.current.has(id))
-              )
-            : new Set();
+          // Merge confirmed IDs from existing group and overlapping groups
+          // Filter out recently removed phones
+          const cleanConfirmedIds = new Set<number>();
+          if (existingGroup) {
+            Array.from(existingGroup.confirmedIds)
+              .filter(id => !recentlyRemovedPhonesRef.current.has(id) && cleanMemberIds.has(id))
+              .forEach(id => cleanConfirmedIds.add(id));
+          }
+          // Also include confirmed IDs from other overlapping groups
+          Array.from(allMergedConfirmedIds)
+            .filter(id => !recentlyRemovedPhonesRef.current.has(id) && cleanMemberIds.has(id))
+            .forEach(id => cleanConfirmedIds.add(id));
           
           newGroups.set(groupId, {
             id: groupId,
-            memberIds: new Set(filteredComponent),
+            memberIds: cleanMemberIds,
             confirmedIds: cleanConfirmedIds,
+          });
+          
+          // Remove all overlapping groups (we'll merge them into one)
+          overlappingGroupIds.forEach(id => {
+            if (id !== groupId) {
+              newGroups.delete(id);
+            }
           });
         }
       }
@@ -1342,6 +1314,7 @@ export default function Desktop() {
                   </div>
                 )}
               </div>
+<<<<<<< HEAD
               
               {/* Recently Removed Phones */}
               <div>
@@ -1465,7 +1438,6 @@ export default function Desktop() {
                 potentialGroups={potentialGroups}
                 onRemoveUser={handleRemoveUser}
                 isRecentlyRemoved={recentlyRemovedPhones.has(body.id)}
-                recentlyRemovedPhones={recentlyRemovedPhones}
               />
             </DraggablePhone>
           ))}
