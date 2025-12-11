@@ -480,7 +480,32 @@ function Screen({
       : confirmedNearbyPhones;
   
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
-  const shouldShowUnifiedView = hasNearbyPhones || 
+  // Always keep notification mounted in homeScreen so it can shrink to pill form
+  const [notificationMounted, setNotificationMounted] = useState(true);
+  const [notificationVisible, setNotificationVisible] = useState(showNotification);
+  const notificationAnimDurationMs = 450; // matches springDuration
+
+  useEffect(() => {
+    // In non-home states, keep the surface mounted/visible so other views work
+    if (viewState !== 'homeScreen') {
+      setNotificationMounted(true);
+      setNotificationVisible(true);
+      return;
+    }
+
+    // In homeScreen, always keep mounted but control expansion state
+    setNotificationMounted(true);
+    if (showNotification) {
+      // Expand to full notification
+      requestAnimationFrame(() => setNotificationVisible(true));
+    } else {
+      // Shrink back to pill form (but stay visible)
+      setNotificationVisible(false);
+    }
+  }, [showNotification, viewState]);
+
+  const shouldShowUnifiedView =
+    (viewState === 'homeScreen' ? notificationMounted : hasNearbyPhones) ||
     (viewState === 'groupConfirm' && (phoneConfirmedGroup || phonePotentialGroup)) ||
     (viewState === 'groupSearch' && phonePotentialGroup);
   const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
@@ -489,6 +514,40 @@ function Screen({
   const isHomeNotification = viewState === 'homeScreen';
   const groupTitleTop = isHomeNotification ? 24 : 74;
   const groupTitleFontSize = isHomeNotification ? 18 : 28;
+  // Dynamic Island dimensions (starting state)
+  const dynamicIslandWidth = 100;
+  const dynamicIslandHeight = 28;
+  const dynamicIslandBorderRadius = 14;
+  
+  // Notification dimensions (expanded state)
+  const notificationWidth = 290; // 312 - 11px left - 11px right
+  const notificationFullHeight = 140;
+  
+  // Calculate animation values for homeScreen notification
+  const notificationScale = viewState === 'homeScreen' 
+    ? (notificationVisible ? 1 : 0) 
+    : 1;
+  
+  const notificationWidthAnimated = viewState === 'homeScreen'
+    ? dynamicIslandWidth + (notificationWidth - dynamicIslandWidth) * notificationScale
+    : notificationWidth;
+  
+  const notificationHeightAnimated = viewState === 'homeScreen'
+    ? dynamicIslandHeight + (notificationFullHeight - dynamicIslandHeight) * notificationScale
+    : notificationFullHeight;
+  
+  const notificationBorderRadiusAnimated = viewState === 'homeScreen'
+    ? dynamicIslandBorderRadius + (36 - dynamicIslandBorderRadius) * notificationScale
+    : 36;
+  
+  // Center the Dynamic Island horizontally, then expand
+  const notificationLeft = viewState === 'homeScreen'
+    ? `${(312 - notificationWidthAnimated) / 2}px` // Center horizontally
+    : '11px';
+  
+  const notificationTop = viewState === 'homeScreen'
+    ? '12px' // Start at top
+    : '12px';
 
   // Control visibility and exit animation of "Waiting for Others..." pill
   const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
@@ -556,14 +615,19 @@ function Screen({
           onClick={viewState === 'homeScreen' ? handleNotificationClick : undefined}
           style={{
             position: 'absolute',
-            top: viewState === 'homeScreen' ? '11px' : '-1px',
-            left: viewState === 'homeScreen' ? '11px' : '-1px',
-            right: viewState === 'homeScreen' ? '11px' : '-1px',
+            top: viewState === 'homeScreen' ? notificationTop : '-1px',
+            left: viewState === 'homeScreen' ? notificationLeft : '-1px',
+            right: viewState === 'homeScreen' ? 'auto' : '-1px',
             bottom: viewState === 'homeScreen' ? 'auto' : '-1px',
-            height: viewState === 'homeScreen' ? notificationHeight : 'calc(100% + 2px)',
+            width: viewState === 'homeScreen' ? `${notificationWidthAnimated}px` : 'auto',
+            height: viewState === 'homeScreen' 
+              ? `${notificationHeightAnimated}px` 
+              : 'calc(100% + 2px)',
             backgroundColor: viewState === 'homeScreen' ? '#000000' : '#000000',
             backdropFilter: viewState === 'homeScreen' ? 'blur(20px)' : 'none',
-            borderRadius: proximityBorderRadius,
+            borderRadius: viewState === 'homeScreen' 
+              ? `${notificationBorderRadiusAnimated}px` 
+              : proximityBorderRadius,
             cursor: viewState === 'homeScreen' ? 'pointer' : 'default',
             pointerEvents: viewState === 'groupConfirm' ? 'none' : 'auto',
             boxShadow: viewState === 'homeScreen' ? '0px 4px 12px rgba(0, 0, 0, 0.3)' : 'none',
@@ -574,8 +638,19 @@ function Screen({
                   ? 1
                   : 2,
             overflow: 'hidden',
-            willChange: 'opacity, height, border-radius, top',
-            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}`,
+            willChange: 'width, height, border-radius, top, left',
+            transition:
+              isSwiping || isTransitioning
+                ? 'none'
+                : `top ${springDuration} ${springCurve},
+                   left ${springDuration} ${springCurve},
+                   bottom ${springDuration} ${springCurve},
+                   width ${springDuration} ${springCurve},
+                   height ${springDuration} ${springCurve},
+                   background-color ${springDuration} ${springCurve},
+                   border-radius ${springDuration} ${springCurve},
+                   backdrop-filter ${springDuration} ${springCurve},
+                   box-shadow ${springDuration} ${springCurve}`,
           }}
         >
           {/* Shared cluster circle/profile - morphs across homeScreen, groupSearch, groupConfirm */}
@@ -626,7 +701,7 @@ function Screen({
             }}
           >
             {/* Center profile picture - this phone - always visible */}
-            {viewState !== 'groupConfirm' && (
+            {viewState !== 'groupConfirm' && notificationVisible && (
               <div
                 className="absolute left-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%]"
                 style={{
@@ -717,8 +792,9 @@ function Screen({
           
           {/* Nearby phone profiles - positioned based on proximity data.
               Hidden in groupConfirm so they no longer track and instead appear
-              only in the bottom cluster UI. */}
-          {viewState !== 'groupConfirm' && (() => {
+              only in the bottom cluster UI.
+              Also hidden when notification is in pill form. */}
+          {viewState !== 'groupConfirm' && notificationVisible && (() => {
             const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
 
             if (nearbyWithinRange.length === 0) return null;
@@ -945,7 +1021,7 @@ function Screen({
               fontVariationSettings: "'wdth' 100",
               top: `${groupTitleTop}px`,
               fontSize: `${groupTitleFontSize}px`,
-              opacity: viewState === 'groupConfirm' ? 0 : 1,
+              opacity: (viewState === 'groupConfirm' || (viewState === 'homeScreen' && !notificationVisible)) ? 0 : 1,
               willChange: 'opacity, top, font-size',
               transition: `opacity ${springDuration} ${springCurve}, top ${springDuration} ${springCurve}, font-size ${springDuration} ${springCurve}`,
             }}
