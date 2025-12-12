@@ -107,7 +107,7 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recent
   };
   
   return (
-    <div className="bg-black overflow-hidden relative size-full" data-name="GroupsHistory" style={{ borderRadius: '24px', willChange: 'opacity, transform', viewTransitionName: 'messages-icon' }}>
+    <div className="bg-black relative size-full" data-name="GroupsHistory" style={{ borderRadius: '24px', willChange: 'opacity, transform', viewTransitionName: 'messages-icon', overflow: 'clip' }}>
       {/* Back button */}
       <div className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]" style={{ willChange: 'transform, opacity', animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both' }}>
         <div className="flex-none scale-y-[-100%]">
@@ -145,6 +145,7 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recent
           overflowY: 'auto',
           paddingLeft: '20px',
           paddingRight: '20px',
+          paddingBottom: '100px',
           zIndex: 5
         }}
       >

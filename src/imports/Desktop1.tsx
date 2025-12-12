@@ -1049,130 +1049,11 @@ export default function Desktop() {
             continue;
           }
           
-          // Check if any member is a representative of an existing group
-          // If so, create a potential group that includes the representative's confirmed group members + new members
-          // First check phoneRepresentativeGroups (from dropdown selection), then fallback to representativePhones
-          let representativeGroupId: string | null = null;
-          let representativePhoneId: number | null = null;
-          for (const memberId of filteredComponent) {
-            // Check dropdown selection first
-            const selectedRepGroupId = phoneRepresentativeGroupsRef.current.get(memberId);
-            if (selectedRepGroupId !== undefined && selectedRepGroupId !== null) {
-              representativeGroupId = selectedRepGroupId;
-              representativePhoneId = memberId;
-              break; // Use the first representative found
-            }
-            // Fallback to old representative system
-            const repGroupId = representativePhonesRef.current.get(memberId);
-            if (repGroupId) {
-              representativeGroupId = repGroupId;
-              representativePhoneId = memberId;
-              break; // Use the first representative found
-            }
-          }
-          
-          // If a representative is found, create a potential group that includes confirmed group members + new members
-          if (representativeGroupId && representativePhoneId !== null) {
-            const representativeGroup = confirmedGroupsRef.current.get(representativeGroupId);
-            if (representativeGroup) {
-              // Find new members (those not already in the representative group)
-              const newMembers = Array.from(filteredComponent).filter(
-                id => !representativeGroup.memberIds.has(id)
-              );
-              
-              // If there are new members, create a potential group that includes:
-              // - All members from the confirmed group (already confirmed)
-              // - All new members (need to confirm)
-              if (newMembers.length > 0) {
-                // Create a combined member set
-                const combinedMembers = new Set<number>([
-                  ...Array.from(representativeGroup.memberIds),
-                  ...newMembers
-                ]);
-                
-                // Only the representative and new members need to confirm
-                // Other existing confirmed group members don't need to confirm again
-                const confirmedIds = new Set<number>();
-                // Don't pre-confirm anyone - representative and new members both need to confirm
-                
-                // Create a key for this potential group (sorted member IDs)
-                const memberArray = Array.from(combinedMembers).sort((a, b) => a - b);
-                const clumpKey = memberArray.join(',');
-                
-                // Check if we already have a potential group for this representative's group
-                // Look for a potential group that contains all the confirmed group members
-                let existingPotentialGroupId: string | null = null;
-                let existingPotentialGroup: PotentialGroup | undefined = undefined;
-                
-                for (const [groupId, group] of potentialGroupsRef.current.entries()) {
-                  const groupMembers = Array.from(group.memberIds).sort((a, b) => a - b);
-                  const groupKey = groupMembers.join(',');
-                  
-                  // Check if this potential group contains all confirmed group members
-                  const containsAllConfirmed = Array.from(representativeGroup.memberIds).every(
-                    id => group.memberIds.has(id)
-                  );
-                  
-                  if (containsAllConfirmed) {
-                    existingPotentialGroupId = groupId;
-                    existingPotentialGroup = group;
-                    break;
-                  }
-                }
-                
-                // Use existing potential group ID or create a new one
-                let potentialGroupId: string;
-                if (existingPotentialGroupId) {
-                  potentialGroupId = existingPotentialGroupId;
-                  // Update the existing group to include new members
-                  const updatedMemberIds = new Set<number>(existingPotentialGroup!.memberIds);
-                  newMembers.forEach(id => updatedMemberIds.add(id));
-                  
-                  // Preserve existing confirmedIds (representative and new members need to confirm)
-                  const updatedConfirmedIds = new Set<number>(existingPotentialGroup!.confirmedIds);
-                  
-                  newGroups.set(potentialGroupId, {
-                    id: potentialGroupId,
-                    memberIds: updatedMemberIds,
-                    confirmedIds: updatedConfirmedIds,
-                    representativePhoneId: existingPotentialGroup!.representativePhoneId || representativePhoneId,
-                    representativeGroupId: existingPotentialGroup!.representativeGroupId || representativeGroupId,
-                  });
-                } else {
-                  // Create a new potential group
-                  newGroupCounter++;
-                  potentialGroupId = `potential-rep-${representativeGroupId}-${potentialGroupsRef.current.size + newGroupCounter}`;
-                  
-                  newGroups.set(potentialGroupId, {
-                    id: potentialGroupId,
-                    memberIds: combinedMembers,
-                    confirmedIds: confirmedIds, // Representative and new members need to confirm
-                    representativePhoneId: representativePhoneId,
-                    representativeGroupId: representativeGroupId,
-                  });
-                }
-                
-                // Track this clump so we don't process it again
-                currentClumps.set(clumpKey, combinedMembers);
-                
-                console.log(`Created potential group ${potentialGroupId} for representative group ${representativeGroupId} with ${newMembers.length} new members`);
-                continue; // Skip normal group creation for this clump
-              }
-            }
-          }
-          
-          // Create a key for this clump (sorted member IDs)
+          // Create a key for this clump (sorted member IDs) - needed for tracking
           const memberArray = Array.from(filteredComponent).sort((a, b) => a - b);
           const clumpKey = memberArray.join(',');
           
-          // Skip if we've already processed this clump
-          if (currentClumps.has(clumpKey)) {
-            continue;
-          }
-          
-          currentClumps.set(clumpKey, filteredComponent);
-          
-          // Find existing potential group with the same members (exact match)
+          // FIRST: Check if there's already ANY potential group for this clump (regular or representative)
           let existingGroupId: string | null = null;
           let existingGroup: PotentialGroup | undefined = undefined;
           
@@ -1187,11 +1068,105 @@ export default function Desktop() {
             }
           }
           
-          // Use existing group ID or create a new one based on current number of potential groups
+          // Check if any member has selected a representative group via dropdown
+          // Only use dropdown selection (phoneRepresentativeGroups) - don't fallback to old system
+          // If a phone explicitly selected "New Group" (null), respect that
+          let representativeGroupId: string | null = null;
+          let representativePhoneId: number | null = null;
+          for (const memberId of filteredComponent) {
+            // Check dropdown selection - only consider non-null values
+            const selectedRepGroupId = phoneRepresentativeGroupsRef.current.get(memberId);
+            if (selectedRepGroupId !== undefined && selectedRepGroupId !== null) {
+              representativeGroupId = selectedRepGroupId;
+              representativePhoneId = memberId;
+              break; // Use the first representative found
+            }
+            // If phone has explicitly set to null (New Group), don't use fallback
+            // Only use fallback if phone hasn't made a selection yet (undefined)
+            if (selectedRepGroupId === undefined) {
+              // Fallback to old representative system only if no explicit selection made
+              const repGroupId = representativePhonesRef.current.get(memberId);
+              if (repGroupId) {
+                representativeGroupId = repGroupId;
+                representativePhoneId = memberId;
+                break; // Use the first representative found
+              }
+            }
+          }
+          
+          // Determine if this should be a representative group or regular group
+          // If any phone explicitly selected "New Group" (null) and no other phone selected a group, it's regular
+          const shouldBeRepresentative = representativeGroupId !== null && representativePhoneId !== null;
+          
+          if (shouldBeRepresentative) {
+            const representativeGroup = confirmedGroupsRef.current.get(representativeGroupId!);
+            // Validate that the representative phone is actually a member of the group they're trying to represent
+            if (representativeGroup && representativeGroup.memberIds.has(representativePhoneId!)) {
+              // Only include phones currently in proximity (filteredComponent)
+              const proximityMembers = Array.from(filteredComponent);
+              
+              // Find new members (those not already in the representative group)
+              const newMembers = proximityMembers.filter(
+                id => !representativeGroup.memberIds.has(id)
+              );
+              
+              // Find existing group members who are in proximity
+              const existingMembersInProximity = proximityMembers.filter(
+                id => representativeGroup.memberIds.has(id)
+              );
+              
+              // Only create potential group if there are new members OR if representative is in proximity
+              if (newMembers.length > 0 || existingMembersInProximity.includes(representativePhoneId!)) {
+                const combinedMembers = new Set<number>(proximityMembers);
+                
+                // Preserve confirmed IDs from existing group if converting from regular to representative
+                const confirmedIds = existingGroup 
+                  ? new Set(Array.from(existingGroup.confirmedIds).filter(id => combinedMembers.has(id)))
+                  : new Set<number>();
+                
+                // If existing group exists, convert/update it in place
+                // This ensures we don't create duplicate groups
+                let potentialGroupId: string;
+                if (existingGroupId && existingGroup) {
+                  // Reuse the existing ID - convert in place
+                  potentialGroupId = existingGroupId;
+                } else {
+                  // No existing group - create new representative group
+                  newGroupCounter++;
+                  potentialGroupId = `potential-rep-${representativeGroupId}-${potentialGroupsRef.current.size + newGroupCounter}`;
+                }
+                
+                newGroups.set(potentialGroupId, {
+                  id: potentialGroupId,
+                  memberIds: combinedMembers,
+                  confirmedIds: confirmedIds,
+                  representativePhoneId: representativePhoneId!,
+                  representativeGroupId: representativeGroupId!,
+                });
+                
+                currentClumps.set(clumpKey, combinedMembers);
+                continue; // Skip regular group creation
+              }
+            }
+            // If representative conditions not met, fall through to regular group creation
+          }
+          
+          // Regular group creation (no representative selected, or representative conditions not met)
+          // Skip if we've already processed this clump
+          if (currentClumps.has(clumpKey)) {
+            continue;
+          }
+          
+          currentClumps.set(clumpKey, filteredComponent);
+          
+          // If existing group exists, convert/update it in place
+          // This ensures we don't create duplicate groups
           let groupId: string;
-          if (existingGroupId) {
+          if (existingGroupId && existingGroup) {
+            // Reuse the existing ID - convert in place
             groupId = existingGroupId;
           } else {
+            // No existing group - create new regular group
             newGroupCounter++;
             groupId = `potential-${potentialGroupsRef.current.size + newGroupCounter}`;
           }
@@ -1204,11 +1179,15 @@ export default function Desktop() {
               .forEach(id => cleanConfirmedIds.add(id));
           }
           
-          // Create ONE potential group for this clump
+          // Create ONE potential group for this clump (regular)
+          // Remove representative fields if converting from representative to regular
           newGroups.set(groupId, {
             id: groupId,
             memberIds: filteredComponent,
             confirmedIds: cleanConfirmedIds,
+            // Explicitly remove representative fields for regular groups
+            representativePhoneId: undefined,
+            representativeGroupId: undefined,
           });
         }
       }
@@ -1294,12 +1273,12 @@ export default function Desktop() {
         // Existing group members don't need to confirm again
         const representativeGroup = confirmedGroupsRef.current.get(group.representativeGroupId);
         if (representativeGroup) {
-          // Find members who need to confirm: representative + new members (not in existing group)
-          const membersWhoNeedToConfirm = Array.from(group.memberIds).filter(
-            id => !representativeGroup.memberIds.has(id) || id === group.representativePhoneId
-          );
+          // For representative groups, only phones currently in proximity need to confirm
+          // All phones in the potential group are in proximity, so they all need to confirm
+          // (The potential group only contains phones in proximity, not all group members)
+          const membersWhoNeedToConfirm = Array.from(group.memberIds);
           
-          // Check if all members who need to confirm have confirmed
+          // Check if all members currently in proximity have confirmed
           allConfirmed = membersWhoNeedToConfirm.length > 0 && 
                         membersWhoNeedToConfirm.every(id => group.confirmedIds.has(id));
         } else {
@@ -1382,46 +1361,39 @@ export default function Desktop() {
 
     // Calculate proximity data for a specific phone
   const calculateProximityData = (body: RigidBody): ProximityData[] => {
+    const PROXIMITY_THRESHOLD_CM = 8.5;
     const proximityList: ProximityData[] = [];
+    const directProximityMap = new Map<number, number>(); // phoneId -> distanceCm
     
     // Calculate proximity for all phones (phones in confirmed groups can still detect proximity)
     const centerX = body.x + body.width / 2;
     const centerY = body.y + body.height / 2;
     
-    for (const otherBody of bodiesRef.current) {
-      if (otherBody.id === body.id) continue;
+    // Helper function to calculate distance and angle between two phones
+    const calculateDistanceAndAngle = (fromBody: RigidBody, toBody: RigidBody) => {
+      const fromCenterX = fromBody.x + fromBody.width / 2;
+      const fromCenterY = fromBody.y + fromBody.height / 2;
+      const toCenterX = toBody.x + toBody.width / 2;
+      const toCenterY = toBody.y + toBody.height / 2;
       
-      // Skip phones that were recently removed
-      if (recentlyRemovedPhonesRef.current.has(otherBody.id)) continue;
-      
-      const otherCenterX = otherBody.x + otherBody.width / 2;
-      const otherCenterY = otherBody.y + otherBody.height / 2;
-      
-      const dx = otherCenterX - centerX;
-      const dy = otherCenterY - centerY;
+      const dx = toCenterX - fromCenterX;
+      const dy = toCenterY - fromCenterY;
       const distancePx = Math.sqrt(dx * dx + dy * dy);
       
       // Calculate edge-to-edge distance instead of center-to-center
-      // Subtract the approximate radius of each phone (half width from each)
-      // This ensures symmetric distance calculation matching updatePotentialGroups
-      const edgeDistancePx = Math.max(0, distancePx - (body.width / 2) - (otherBody.width / 2));
+      const edgeDistancePx = Math.max(0, distancePx - (fromBody.width / 2) - (toBody.width / 2));
       
       // Convert pixels to cm using adjusted scale
-      // Max distance is 8.5cm for proximity detection
-      // Adjusted conversion factor to make distances appear more realistic
       const rawDistanceCm = edgeDistancePx * 0.0125;
-      // Enforce a minimum readable distance so overlapping phones don't show as 0cm
       const distanceCm = Math.max(2, rawDistanceCm);
       
       // Rotate the offset vector into the phone's local coordinate system
-      // This ensures positions rotate smoothly around the center as the phone rotates
-      const cos = Math.cos(-body.rotation);
-      const sin = Math.sin(-body.rotation);
+      const cos = Math.cos(-fromBody.rotation);
+      const sin = Math.sin(-fromBody.rotation);
       const localX = dx * cos - dy * sin;
       const localY = dx * sin + dy * cos;
       
       // Calculate angle from the rotated coordinates
-      // (0° = East, 90° = South, 180° = West, 270° = North in phone's local space)
       let angleDeg = Math.atan2(localY, localX) * (180 / Math.PI);
       if (angleDeg < 0) angleDeg += 360;
       
@@ -1445,14 +1417,78 @@ export default function Desktop() {
         direction = "NE";
       }
       
-      proximityList.push({
-        phoneId: otherBody.id,
-        distanceCm: distanceCm,
-        direction: direction,
-        degrees: Math.round(angleDeg),
-        relativeX: localX, // Rotated to phone's local space
-        relativeY: localY, // Rotated to phone's local space
-      });
+      return { distanceCm, angleDeg, direction, localX, localY };
+    };
+    
+    // Step 1: Calculate direct proximity
+    for (const otherBody of bodiesRef.current) {
+      if (otherBody.id === body.id) continue;
+      
+      // Skip phones that were recently removed
+      if (recentlyRemovedPhonesRef.current.has(otherBody.id)) continue;
+      
+      const { distanceCm, angleDeg, direction, localX, localY } = calculateDistanceAndAngle(body, otherBody);
+      
+      // Only add direct proximity if within threshold
+      if (distanceCm <= PROXIMITY_THRESHOLD_CM) {
+        directProximityMap.set(otherBody.id, distanceCm);
+        
+        proximityList.push({
+          phoneId: otherBody.id,
+          distanceCm: distanceCm,
+          direction: direction,
+          degrees: Math.round(angleDeg),
+          relativeX: localX,
+          relativeY: localY,
+          isIndirect: false,
+        });
+      }
+    }
+    
+    // Step 2: Calculate indirect proximity through daisy chaining (one hop)
+    // If phone A detects phone B, and phone B detects phone C, then A can see C
+    for (const intermediateBody of bodiesRef.current) {
+      if (intermediateBody.id === body.id) continue;
+      if (recentlyRemovedPhonesRef.current.has(intermediateBody.id)) continue;
+      
+      // Check if we have direct proximity to this intermediate phone
+      const directDistanceToIntermediate = directProximityMap.get(intermediateBody.id);
+      if (!directDistanceToIntermediate) continue;
+      
+      // Check what phones the intermediate phone can detect directly
+      for (const targetBody of bodiesRef.current) {
+        if (targetBody.id === body.id || targetBody.id === intermediateBody.id) continue;
+        if (recentlyRemovedPhonesRef.current.has(targetBody.id)) continue;
+        
+        // Skip if we already have direct proximity to this target
+        if (directProximityMap.has(targetBody.id)) continue;
+        
+        // Calculate distance from intermediate to target
+        const { distanceCm: intermediateToTargetDistance } = calculateDistanceAndAngle(intermediateBody, targetBody);
+        
+        // If intermediate phone can detect target phone directly
+        if (intermediateToTargetDistance <= PROXIMITY_THRESHOLD_CM) {
+          // Calculate total chain distance (A->B + B->C)
+          const totalDistanceCm = directDistanceToIntermediate + intermediateToTargetDistance;
+          
+          // Only add indirect proximity if total distance is reasonable (e.g., within 2x threshold)
+          // This prevents showing phones that are too far away even through chaining
+          if (totalDistanceCm <= PROXIMITY_THRESHOLD_CM * 2) {
+            // Calculate angle and direction from current phone to target (direct angle, not through intermediate)
+            const { angleDeg, direction, localX, localY } = calculateDistanceAndAngle(body, targetBody);
+            
+            proximityList.push({
+              phoneId: targetBody.id,
+              distanceCm: totalDistanceCm,
+              direction: direction,
+              degrees: Math.round(angleDeg),
+              relativeX: localX,
+              relativeY: localY,
+              isIndirect: true, // Mark as indirect/daisy-chained
+            });
+          }
+        }
+      }
     }
     
     // Sort by distance (closest first)

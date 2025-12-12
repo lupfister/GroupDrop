@@ -203,6 +203,19 @@ function Screen({
   currentRepresentativeGroupId?: string | null;
   onRepresentativeGroupChange?: (phoneId: number, groupId: string | null) => void;
 }) {
+  // Proximity thresholds
+  const PROXIMITY_THRESHOLD_CM = 8.5;
+  const INDIRECT_PROXIMITY_THRESHOLD_CM = PROXIMITY_THRESHOLD_CM * 2; // Allow indirect phones up to 2x the direct threshold
+  
+  // Helper function to check if proximity data should be shown
+  // Direct phones: <= 8.5cm, Indirect phones: <= 17cm
+  const isWithinProximityRange = (data: ProximityData): boolean => {
+    if (data.isIndirect) {
+      return data.distanceCm <= INDIRECT_PROXIMITY_THRESHOLD_CM;
+    }
+    return data.distanceCm <= PROXIMITY_THRESHOLD_CM;
+  };
+  
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
   // groupConfirm -> confirmation / group screen state
@@ -273,9 +286,9 @@ function Screen({
     }
   }, [swipeOffset, viewState, onStateChange]);
   
-  // Check if any phones are within 8.5cm
+  // Check if any phones are within proximity range (direct or indirect)
   // Suppress notifications if this user was recently removed
-  const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
+  const hasNearbyPhones = proximityData.some(data => isWithinProximityRange(data));
   const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
   // showNotification will be calculated later after group variables are defined
   let showNotification = false;
@@ -616,10 +629,10 @@ function Screen({
     currentSwipeRemoveDistanceRef.current = 0;
   };
   
-  // Get nearby phones within range
+  // Get nearby phones within range (including indirect/daisy-chained)
   // Filter out recently removed users to ensure they don't appear anywhere
   const nearbyPhones = proximityData
-    .filter(data => data.distanceCm <= 8.5 && !recentlyRemovedPhones?.has(data.phoneId))
+    .filter(data => isWithinProximityRange(data) && !recentlyRemovedPhones?.has(data.phoneId))
     .map(data => allBodies.find(b => b.id === data.phoneId))
     .filter((phone): phone is RigidBody => phone !== undefined);
   
@@ -698,10 +711,10 @@ function Screen({
   const hasNewPotentialGroupMembers = (() => {
     if (!hasNearbyPhones) return false;
     
-    // Get all nearby phone IDs
+    // Get all nearby phone IDs (including indirect/daisy-chained)
     const nearbyPhoneIds = new Set(
       proximityData
-        .filter(data => data.distanceCm <= 8.5 && !recentlyRemovedPhones?.has(data.phoneId))
+        .filter(data => isWithinProximityRange(data) && !recentlyRemovedPhones?.has(data.phoneId))
         .map(data => data.phoneId)
     );
     
@@ -735,11 +748,123 @@ function Screen({
     return nearbyPhoneIds.size > 0;
   })();
   
-  // Update showNotification to only show if there are new potential group members
-  showNotification = hasNewPotentialGroupMembers && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory') && !isRecentlyRemoved;
-  
   // Check if phone has confirmed in a potential group (new group being formed)
   const hasConfirmedInPotentialGroup = phonePotentialGroup && phonePotentialGroup.confirmedIds.has(body.id);
+  
+  // Check if there are new potential groups (different from the current one being confirmed)
+  // A new potential group is one that:
+  // 1. Contains this phone but is different from phonePotentialGroup, OR
+  // 2. Contains phones that are NOT in the current potential/confirmed group
+  const hasNewPotentialGroups = (() => {
+    if (!potentialGroups || potentialGroups.size === 0) {
+      return false;
+    }
+    
+    // If phone is in a potential group, check for other potential groups
+    if (phonePotentialGroup) {
+      const currentGroupMemberIds = phonePotentialGroup.memberIds;
+      
+      // Check if there are other potential groups that are different from the current one
+      for (const [groupId, potentialGroup] of potentialGroups) {
+        // Skip the current potential group
+        if (groupId === phonePotentialGroup.id) {
+          continue;
+        }
+        
+        // Check if this group contains this phone (different group with this phone)
+        if (potentialGroup.memberIds.has(body.id)) {
+          return true;
+        }
+        
+        // Check if this group contains phones that are NOT in the current group
+        // This indicates a new potential group forming nearby
+        const hasNewMembers = Array.from(potentialGroup.memberIds).some(
+          id => !currentGroupMemberIds.has(id)
+        );
+        
+        if (hasNewMembers) {
+          // Check if any of those new members are actually nearby (in proximity)
+          const newMemberIds = Array.from(potentialGroup.memberIds).filter(
+            id => !currentGroupMemberIds.has(id)
+          );
+          const nearbyPhoneIds = new Set(proximityData
+            .filter(data => isWithinProximityRange(data))
+            .map(data => data.phoneId)
+          );
+          
+          const hasNearbyNewMembers = newMemberIds.some(id => nearbyPhoneIds.has(id));
+          if (hasNearbyNewMembers) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    // If phone is in a confirmed group but NOT in a potential group, check for any potential groups
+    // that contain phones not in the confirmed group
+    if (phoneConfirmedGroup && !phonePotentialGroup) {
+      const confirmedGroupMemberIds = phoneConfirmedGroup.memberIds;
+      
+      for (const [groupId, potentialGroup] of potentialGroups) {
+        // Check if this potential group contains phones that are NOT in the confirmed group
+        const hasNewMembers = Array.from(potentialGroup.memberIds).some(
+          id => !confirmedGroupMemberIds.has(id)
+        );
+        
+        if (hasNewMembers) {
+          // Check if any of those new members are actually nearby (in proximity)
+          const newMemberIds = Array.from(potentialGroup.memberIds).filter(
+            id => !confirmedGroupMemberIds.has(id)
+          );
+          const nearbyPhoneIds = new Set(proximityData
+            .filter(data => isWithinProximityRange(data))
+            .map(data => data.phoneId)
+          );
+          
+          const hasNearbyNewMembers = newMemberIds.some(id => nearbyPhoneIds.has(id));
+          if (hasNearbyNewMembers) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
+  })();
+  
+  // Check if phone is in "confirmed but waiting for others" state
+  // This happens when: phone has confirmed AND there are unconfirmed members waiting
+  // We need to calculate unconfirmedNearbyPhones first to check this, but we'll do a quick check here
+  const isWaitingForOthers = (() => {
+    if (!hasConfirmedInPotentialGroup || !phonePotentialGroup) {
+      return false;
+    }
+    
+    // Quick check: are there any unconfirmed members in the current potential group?
+    const unconfirmedCount = Array.from(phonePotentialGroup.memberIds).filter(
+      id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id
+    ).length;
+    
+    return unconfirmedCount > 0;
+  })();
+  
+  // Update showNotification to show whenever phones are in proximity (not just new members)
+  // BUT: Don't show if phone has confirmed and is waiting for others UNLESS there are new potential groups
+  // Also: Don't show if phone is in a confirmed group (but not in a potential group) UNLESS there are new potential groups
+  // This ensures the dynamic island is always expanded when phones are nearby, except when waiting or in confirmed groups
+  const shouldShowNotificationBase = hasNearbyPhones && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory') && !isRecentlyRemoved;
+  
+  // Check if phone is in a confirmed group but NOT in a potential group
+  const isInConfirmedGroupOnly = phoneConfirmedGroup && !phonePotentialGroup;
+  
+  // If waiting for others OR in confirmed group only, only show notification if there are new potential groups
+  // This prevents the notification from showing when:
+  // 1. Just waiting for others to confirm in a potential group
+  // 2. In a confirmed group with no potential group activity
+  // but allows it to show when there are new potential groups forming nearby
+  showNotification = (isWaitingForOthers || isInConfirmedGroupOnly)
+    ? hasNewPotentialGroups && shouldShowNotificationBase
+    : shouldShowNotificationBase;
   
   // Get all confirmed phones: show based on which group's screen is active
   // IMPORTANT: For confirmed groups, always use locked-in members regardless of proximity
@@ -878,8 +1003,32 @@ function Screen({
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
   // But hide it completely if user was recently removed (they should be in zero state with no notification)
   // Explicitly check that isRecentlyRemoved is not true to ensure the notification overlay is completely removed
+  // Always keep notification mounted in homeScreen so it can shrink to pill form
+  const [notificationMounted, setNotificationMounted] = useState(true);
+  const [notificationVisible, setNotificationVisible] = useState(showNotification);
+  const notificationAnimDurationMs = 450; // matches springDuration
+
+  useEffect(() => {
+    // In non-home states, keep the surface mounted/visible so other views work
+    if (viewState !== 'homeScreen') {
+      setNotificationMounted(true);
+      setNotificationVisible(true);
+      return;
+    }
+
+    // In homeScreen, always keep mounted but control expansion state
+    setNotificationMounted(true);
+    if (showNotification) {
+      // Expand to full notification
+      requestAnimationFrame(() => setNotificationVisible(true));
+    } else {
+      // Shrink back to pill form (but stay visible)
+      setNotificationVisible(false);
+    }
+  }, [showNotification, viewState]);
+
   const shouldShowUnifiedView = (isRecentlyRemoved !== true) && (
-    hasNearbyPhones || 
+    (viewState === 'homeScreen' ? notificationMounted : hasNearbyPhones) ||
     phonePotentialGroup ||
     phoneConfirmedGroup ||
     (viewState === 'groupConfirm' && (phonePotentialGroup || phoneConfirmedGroup)) ||
@@ -891,6 +1040,40 @@ function Screen({
   const isHomeNotification = viewState === 'homeScreen';
   const groupTitleTop = isHomeNotification ? 24 : 74;
   const groupTitleFontSize = isHomeNotification ? 18 : 28;
+  // Dynamic Island dimensions (starting state)
+  const dynamicIslandWidth = 100;
+  const dynamicIslandHeight = 28;
+  const dynamicIslandBorderRadius = 14;
+  
+  // Notification dimensions (expanded state)
+  const notificationWidth = 290; // 312 - 11px left - 11px right
+  const notificationFullHeight = 140;
+  
+  // Calculate animation values for homeScreen notification
+  const notificationScale = viewState === 'homeScreen' 
+    ? (notificationVisible ? 1 : 0) 
+    : 1;
+  
+  const notificationWidthAnimated = viewState === 'homeScreen'
+    ? dynamicIslandWidth + (notificationWidth - dynamicIslandWidth) * notificationScale
+    : notificationWidth;
+  
+  const notificationHeightAnimated = viewState === 'homeScreen'
+    ? dynamicIslandHeight + (notificationFullHeight - dynamicIslandHeight) * notificationScale
+    : notificationFullHeight;
+  
+  const notificationBorderRadiusAnimated = viewState === 'homeScreen'
+    ? dynamicIslandBorderRadius + (36 - dynamicIslandBorderRadius) * notificationScale
+    : 36;
+  
+  // Center the Dynamic Island horizontally, then expand
+  const notificationLeft = viewState === 'homeScreen'
+    ? `${(312 - notificationWidthAnimated) / 2}px` // Center horizontally
+    : '11px';
+  
+  const notificationTop = viewState === 'homeScreen'
+    ? '12px' // Start at top
+    : '12px';
 
   // Control visibility and exit animation of "Waiting for Others..." pill
   const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
@@ -1159,18 +1342,23 @@ function Screen({
           onClick={viewState === 'homeScreen' ? handleNotificationClick : undefined}
           style={{
             position: 'absolute',
-            top: viewState === 'homeScreen' ? '11px' : '-1px',
-            left: viewState === 'homeScreen' ? '11px' : '-1px',
-            right: viewState === 'homeScreen' ? '11px' : '-1px',
+            top: viewState === 'homeScreen' ? notificationTop : '-1px',
+            left: viewState === 'homeScreen' ? notificationLeft : '-1px',
+            right: viewState === 'homeScreen' ? 'auto' : '-1px',
             bottom: viewState === 'homeScreen' ? 'auto' : '-1px',
-            height: viewState === 'homeScreen' ? notificationHeight : 'calc(100% + 2px)',
+            width: viewState === 'homeScreen' ? `${notificationWidthAnimated}px` : 'auto',
+            height: viewState === 'homeScreen' 
+              ? `${notificationHeightAnimated}px` 
+              : 'calc(100% + 2px)',
             backgroundColor: viewState === 'homeScreen' ? '#000000' : '#000000',
             backdropFilter: viewState === 'homeScreen' ? 'blur(20px)' : 'none',
-            borderRadius: proximityBorderRadius,
+            borderRadius: viewState === 'homeScreen' 
+              ? `${notificationBorderRadiusAnimated}px` 
+              : proximityBorderRadius,
             border: viewState === 'homeScreen' ? '1px solid #333333' : 'none',
             cursor: viewState === 'homeScreen' ? 'pointer' : 'default',
             pointerEvents: viewState === 'groupConfirm' ? 'none' : 'auto',
-            boxShadow: viewState === 'homeScreen' ? '0px 4px 12px rgba(0, 0, 0, 0.3)' : 'none',
+            boxShadow: 'none',
             zIndex:
               viewState === 'groupSearch'
                 ? 10
@@ -1178,8 +1366,18 @@ function Screen({
                   ? 1
                   : 2,
             overflow: 'hidden',
-            willChange: 'opacity, height, border-radius, top, border',
-            transition: (isSwiping || isTransitioning) ? 'none' : `top ${springDuration} ${springCurve}, left ${springDuration} ${springCurve}, right ${springDuration} ${springCurve}, bottom ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, background-color ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, backdrop-filter ${springDuration} ${springCurve}, box-shadow ${springDuration} ${springCurve}, border ${springDuration} ${springCurve}`,
+            willChange: 'width, height, border-radius, top, left',
+            transition:
+              isSwiping || isTransitioning
+                ? 'none'
+                : `top ${springDuration} ${springCurve},
+                   left ${springDuration} ${springCurve},
+                   bottom ${springDuration} ${springCurve},
+                   width ${springDuration} ${springCurve},
+                   height ${springDuration} ${springCurve},
+                   background-color ${springDuration} ${springCurve},
+                   border-radius ${springDuration} ${springCurve},
+                   backdrop-filter ${springDuration} ${springCurve}`,
           }}
         >
           {/* Shared cluster circle/profile - morphs across homeScreen, groupSearch, groupConfirm */}
@@ -1230,7 +1428,7 @@ function Screen({
             }}
           >
             {/* Center profile picture - this phone - always visible */}
-            {viewState !== 'groupConfirm' && (
+            {((viewState !== 'groupConfirm') || (viewState === 'groupConfirm' && hasNewPotentialGroups)) && notificationVisible && (
               <div
                 className="absolute left-1/2 top-1/2 translate-x-[-50%] translate-y-[-50%]"
                 style={{
@@ -1352,13 +1550,55 @@ function Screen({
           </div>
           
           {/* Nearby phone profiles - positioned based on proximity data.
-              Hidden in groupConfirm so they no longer track and instead appear
-              only in the bottom cluster UI. */}
-          {viewState !== 'groupConfirm' && (() => {
+              Hidden in groupConfirm when waiting for others (unless there are new potential groups).
+              When waiting for others, only show phones from new potential groups.
+              Also hidden when notification is in pill form. */}
+          {((viewState !== 'groupConfirm') || (viewState === 'groupConfirm' && hasNewPotentialGroups)) && notificationVisible && (() => {
             // Filter out recently removed users immediately to ensure they don't appear on any device
             let nearbyWithinRange = proximityData
-              .filter(data => data.distanceCm <= 8.5)
+              .filter(data => isWithinProximityRange(data))
               .filter(data => !recentlyRemovedPhones?.has(data.phoneId));
+            
+            // If waiting for others OR in confirmed group only, filter to only show phones from new potential groups
+            // This ensures we only show new potential groups, not the current group being confirmed or the confirmed group
+            if ((isWaitingForOthers || isInConfirmedGroupOnly) && potentialGroups) {
+              const currentGroupMemberIds = phonePotentialGroup 
+                ? phonePotentialGroup.memberIds 
+                : (phoneConfirmedGroup ? phoneConfirmedGroup.memberIds : new Set<number>());
+              const newPotentialGroupMemberIds = new Set<number>();
+              
+              // Collect all member IDs from new potential groups
+              for (const [groupId, potentialGroup] of potentialGroups) {
+                // Skip the current potential group if we're waiting for others
+                if (isWaitingForOthers && phonePotentialGroup && groupId === phonePotentialGroup.id) {
+                  continue;
+                }
+                
+                // If this group contains this phone or has new members, include all its members
+                if (potentialGroup.memberIds.has(body.id)) {
+                  // This phone is in a different potential group
+                  potentialGroup.memberIds.forEach(id => newPotentialGroupMemberIds.add(id));
+                } else {
+                  // Check if this group has members not in the current group
+                  const hasNewMembers = Array.from(potentialGroup.memberIds).some(
+                    id => !currentGroupMemberIds.has(id)
+                  );
+                  if (hasNewMembers) {
+                    // Include only the new members (not already in current group)
+                    potentialGroup.memberIds.forEach(id => {
+                      if (!currentGroupMemberIds.has(id)) {
+                        newPotentialGroupMemberIds.add(id);
+                      }
+                    });
+                  }
+                }
+              }
+              
+              // Filter to only show phones from new potential groups
+              nearbyWithinRange = nearbyWithinRange.filter(data => 
+                newPotentialGroupMemberIds.has(data.phoneId)
+              );
+            }
             
             // In groupSearch view, show all nearby users who are in proximity
             // The group membership filter was too restrictive - it prevented new users
@@ -1610,7 +1850,7 @@ function Screen({
               fontVariationSettings: "'wdth' 100",
               top: `${groupTitleTop}px`,
               fontSize: `${groupTitleFontSize}px`,
-              opacity: viewState === 'groupConfirm' ? 0 : 1,
+              opacity: (viewState === 'groupConfirm' || (viewState === 'homeScreen' && !notificationVisible)) ? 0 : 1,
               willChange: 'opacity, top, font-size',
               transition: `opacity ${springDuration} ${springCurve}, top ${springDuration} ${springCurve}, font-size ${springDuration} ${springCurve}`,
             }}
@@ -2004,7 +2244,7 @@ function Screen({
 
             {/* Nearby phone profiles */}
             {(() => {
-              const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+              const nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
               if (nearbyWithinRange.length === 0) return null;
 
               const notificationMaxDisplayRadius = 100;
@@ -2202,7 +2442,7 @@ function Screen({
 
             {/* Nearby phone profiles */}
             {(() => {
-              const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+              const nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
               if (nearbyWithinRange.length === 0) return null;
 
               const notificationMaxDisplayRadius = 100;

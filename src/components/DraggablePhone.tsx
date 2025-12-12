@@ -8,6 +8,7 @@ export interface ProximityData {
   degrees: number;
   relativeX: number; // Relative X position in pixels
   relativeY: number; // Relative Y position in pixels
+  isIndirect?: boolean; // True if detected through daisy chaining (via another phone)
 }
 
 interface DraggablePhoneProps {
