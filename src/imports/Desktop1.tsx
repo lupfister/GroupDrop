@@ -2,8 +2,8 @@ import svgPaths from "./svg-rzm29w0w4u";
 import imgIPhone16ProWhiteTitaniumPortrait from "figma:asset/898d6b6326c8696cb62d35eae092fcdb03f4c874.png";
 import { DraggablePhone, ProximityData } from "../components/DraggablePhone";
 import { PhoneWithProximity } from "../components/PhoneWithProximity";
-import { useState, useRef, useEffect } from "react";
-import { Plus, Minus, ZoomIn, ZoomOut } from "lucide-react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { Plus, Minus, ZoomIn, ZoomOut, MousePointer2, Move } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { 
   RigidBody, 
@@ -13,6 +13,12 @@ import {
   checkBoundaryCollision, 
   updatePhysics 
 } from "../utils/physics";
+import imgRima from "../assets/rima.png";
+import imgHaijun from "../assets/haijun.png";
+import imgSerene from "../assets/serene.png";
+import imgAnna from "../assets/anna.png";
+import imgSarah from "../assets/sarah.png";
+import imgCory from "../assets/cory.png";
 
 type Tool = 'move' | 'interact';
 
@@ -185,14 +191,28 @@ export default function Desktop() {
   const frameCountRef = useRef(0);
   const calculateProximityDataRef = useRef<((body: RigidBody) => ProximityData[]) | null>(null);
   
-  // Pool of profile images to cycle through
-  const profileImages = [
-    "https://images.unsplash.com/photo-1669206053726-bfafe8d4537f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwb3J0cmFpdCUyMGZhY2UlMjBwZXJzb258ZW58MXx8fHwxNzY0Nzg5MDE3fDA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-    "https://images.unsplash.com/photo-1689600944138-da3b150d9cb8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHdvbWFufGVufDF8fHx8MTc2NDcxMjI2N3ww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-    "https://images.unsplash.com/photo-1672685667592-0392f458f46f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMG1hbnxlbnwxfHx8fDE3NjQ3MTIyNjd8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-    "https://images.unsplash.com/photo-1622220104185-96a16a59a432?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjYXN1YWwlMjBwb3J0cmFpdCUyMHlvdW5nfGVufDF8fHx8MTc2NDcyODQ5NXww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-    "https://images.unsplash.com/photo-1667556205536-e5b04ee97ace?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwZXJzb24lMjBzbWlsaW5nJTIwcHJvZmVzc2lvbmFsfGVufDF8fHx8MTc2NDc5NDA3OHww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral"
+  // Name and profile image pairs
+  const nameImagePairs = [
+    { name: "Rima", image: imgRima },
+    { name: "Haijun", image: imgHaijun },
+    { name: "Serene", image: imgSerene },
+    { name: "Anna", image: imgAnna },
+    { name: "Sarah", image: imgSarah },
+    { name: "Cory", image: imgCory },
   ];
+  
+  // Fisher-Yates shuffle function
+  const shuffleArray = <T,>(array: T[]): T[] => {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+  };
+  
+  // Shuffled name+image pairs (shuffled once on component mount)
+  const shuffledPairs = useMemo(() => shuffleArray(nameImagePairs), []);
   
   // Use refs to always have the latest values during wheel / touch events
   const zoomRef = useRef(zoom);
@@ -250,6 +270,10 @@ export default function Desktop() {
       const viewportWidth = window.innerWidth / zoom;
       const viewportHeight = window.innerHeight / zoom;
       
+      // Get name+image pairs for initial phones
+      const pair1 = shuffledPairs[0 % shuffledPairs.length];
+      const pair2 = shuffledPairs[1 % shuffledPairs.length];
+      
       // First phone - centered
       const initialBody1: RigidBody = {
         id: 1,
@@ -266,7 +290,8 @@ export default function Desktop() {
         width: phoneWidth,
         height: phoneHeight,
         isDragging: false,
-        profileImage: profileImages[1 % profileImages.length]
+        profileImage: pair1.image,
+        name: pair1.name
       };
       
       // Second phone - offset to the right
@@ -285,7 +310,8 @@ export default function Desktop() {
         width: phoneWidth,
         height: phoneHeight,
         isDragging: false,
-        profileImage: profileImages[2 % profileImages.length]
+        profileImage: pair2.image,
+        name: pair2.name
       };
       
       bodiesRef.current.push(initialBody1);
@@ -293,7 +319,7 @@ export default function Desktop() {
       forceUpdate(prev => prev + 1); // Force re-render after adding initial phones
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount
+  }, [shuffledPairs]); // Only run once on mount, but depend on shuffledPairs
 
   // Physics loop
   useEffect(() => {
@@ -575,6 +601,9 @@ export default function Desktop() {
     const x = worldCenterX - phoneWidth / 2 + (Math.random() - 0.5) * 200;
     const y = worldCenterY - phoneHeight / 2 + (Math.random() - 0.5) * 200;
     
+    // Get name+image pair for this phone
+    const pair = shuffledPairs[nextIdRef.current % shuffledPairs.length];
+    
     const newBody: RigidBody = {
       id: nextIdRef.current,
       x,
@@ -590,7 +619,8 @@ export default function Desktop() {
       width: phoneWidth,
       height: phoneHeight,
       isDragging: false,
-      profileImage: profileImages[nextIdRef.current % profileImages.length]
+      profileImage: pair.image,
+      name: pair.name
     };
     
     bodiesRef.current.push(newBody);

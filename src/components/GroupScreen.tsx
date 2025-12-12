@@ -150,7 +150,9 @@ export function GroupScreen({ confirmedUsers, unconfirmedUsers, onBack, tool }: 
       {/* Group name badge */}
       <div className="absolute bg-[#222222] box-border content-stretch flex gap-[6.169px] items-center justify-center left-[calc(50%-0.01px)] px-[9.254px] py-[6.169px] rounded-[77.114px] shadow-[0px_0px_23.134px_0px_rgba(0,0,0,0.15)] top-[100.26px] translate-x-[-50%]" data-name="groupname" style={{ willChange: 'transform, opacity', animation: 'fadeInSlideDown 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both' }}>
         <p className="font-['SF_Pro:Bold',sans-serif] font-bold leading-[normal] relative shrink-0 text-[12.338px] text-nowrap text-white tracking-[-0.116px] whitespace-pre" style={{ fontVariationSettings: "'wdth' 100" }}>
-          New Group
+          {confirmedUsers.length > 0 
+            ? confirmedUsers.map(user => user.name).join(', ')
+            : 'New Group'}
         </p>
       </div>
       

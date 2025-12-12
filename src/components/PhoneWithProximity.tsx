@@ -1396,7 +1396,7 @@ function Screen({
                 viewState === 'homeScreen'
                   ? '60%'
                   : viewState === 'groupSearch'
-                    ? 'calc(50% - 18px)'
+                    ? 'calc(50% + 14px)'
                     : '60.26px', // slightly above "New Group" pill
               transform:
                 viewState === 'homeScreen'
@@ -1747,7 +1747,7 @@ function Screen({
             resolveOverlaps2D(fullXs, fullYs, fullSizes, 6);
 
             const topOffset =
-              viewState === 'homeScreen' ? '60%' : 'calc(50% - 18px)';
+              viewState === 'homeScreen' ? '60%' : 'calc(50% + 14px)';
 
             return layoutEntries.map((entry, index) => {
               const isHome = viewState === 'homeScreen';
@@ -1804,7 +1804,7 @@ function Screen({
           
           {/* Swipe to Confirm with arrow - only visible in full view */}
           <div 
-            className="absolute h-[577.625px] left-[calc(50%+0.5px)] top-[31.19px] translate-x-[-50%] w-[577.626px]"
+            className="absolute h-[577.625px] left-[calc(50%+0.5px)] top-[63.19px] translate-x-[-50%] w-[577.626px]"
             onMouseDown={handleConfirmSwipeStart}
             onTouchStart={handleConfirmSwipeStart}
             style={{
@@ -1874,6 +1874,29 @@ function Screen({
             
             // Always show dropdown (even if phone isn't in any groups - they can select "New Group")
             const selectedGroupId = currentRepresentativeGroupId || null;
+            const hasConfirmedGroups = phoneGroups.length > 0;
+            
+            // Get selected group for display
+            const selectedGroup = selectedGroupId && confirmedGroups 
+              ? confirmedGroups.get(selectedGroupId) 
+              : null;
+            
+            // Helper function to get member names for display
+            const getMemberNames = (memberIds: Set<number>): string[] => {
+              return Array.from(memberIds)
+                .map(id => {
+                  const phone = allBodies.find(b => b.id === id);
+                  return phone?.name || `User ${id}`;
+                })
+                .filter((name): name is string => name !== undefined);
+            };
+            
+            // Get nearby phone IDs for "New Group"
+            const nearbyPhoneIds = proximityData
+              .filter(data => data.distanceCm <= 8.5)
+              .filter(data => !recentlyRemovedPhones?.has(data.phoneId))
+              .map(data => data.phoneId)
+              .slice(0, 4);
             
             return (
               <div 
@@ -1890,27 +1913,53 @@ function Screen({
               >
                 <button
                   onClick={(e) => {
-                    if (tool !== 'interact') return;
+                    if (tool !== 'interact' || !hasConfirmedGroups) return;
                     e.stopPropagation();
                     setIsRepresentativeDropdownOpen(!isRepresentativeDropdownOpen);
                   }}
-                  className="bg-[#222222] text-white px-3 py-1.5 rounded-lg text-sm flex items-center gap-2 hover:bg-[#333333] transition-colors"
+                  disabled={!hasConfirmedGroups}
+                  className="bg-[#222222] text-white px-3 py-1.5 text-sm flex items-center justify-between hover:bg-[#333333] transition-colors"
                   style={{
                     fontFamily: "'SF Pro', sans-serif",
                     fontSize: '12px',
-                    minWidth: '120px',
+                    borderRadius: isRepresentativeDropdownOpen ? '8px 8px 0 0' : '8px',
+                    minWidth: '140px',
                   }}
                 >
-                  <span>{selectedGroupId ? `Group ${selectedGroupId}` : 'New Group'}</span>
-                  <span style={{ fontSize: '10px' }}>{isRepresentativeDropdownOpen ? '▲' : '▼'}</span>
+                  <span>
+                    {selectedGroup 
+                      ? getMemberNames(selectedGroup.memberIds).join(', ')
+                      : 'New Group'}
+                  </span>
+                  {hasConfirmedGroups && (
+                    <span 
+                      style={{ 
+                        fontSize: '12px',
+                        opacity: 0.7,
+                        transition: 'transform 0.2s ease, opacity 0.2s ease',
+                        transform: isRepresentativeDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M0.75 0.75L4.75 4.75L8.75 0.75" stroke="#E3E3E3" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </span>
+                  )}
                 </button>
                 
                 {isRepresentativeDropdownOpen && (
                   <div 
-                    className="absolute mt-1 bg-[#222222] rounded-lg shadow-lg overflow-hidden"
+                    className="absolute bg-[#222222] shadow-lg overflow-hidden"
                     style={{
-                      minWidth: '120px',
+                      width: 'fit-content',
+                      minWidth: '140px',
+                      top: '100%',
                       zIndex: 101,
+                      borderBottomLeftRadius: '8px',
+                      borderBottomRightRadius: '8px',
                     }}
                   >
                     <button
@@ -1921,37 +1970,87 @@ function Screen({
                         }
                         setIsRepresentativeDropdownOpen(false);
                       }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-[#333333] transition-colors ${
+                      className={`w-full text-left px-4 py-2.5 hover:bg-[#333333] transition-colors flex items-center ${
                         selectedGroupId === null ? 'bg-[#333333]' : ''
                       }`}
                       style={{
                         fontFamily: "'SF Pro', sans-serif",
-                        color: 'white',
                       }}
                     >
-                      New Group
+                      {/* Text content */}
+                      <div className="flex-1 min-w-0">
+                        <div 
+                          className="text-white"
+                          style={{
+                            fontSize: '15px',
+                            fontWeight: 500,
+                            marginBottom: '3px',
+                            lineHeight: '1.2',
+                          }}
+                        >
+                          New Group
+                        </div>
+                        <div 
+                          style={{
+                            fontSize: '12px',
+                            fontWeight: 400,
+                            color: 'rgba(255, 255, 255, 0.7)',
+                            lineHeight: '1.2',
+                          }}
+                        >
+                          {getMemberNames(new Set([body.id, ...nearbyPhoneIds])).join(', ')}
+                        </div>
+                      </div>
                     </button>
-                    {phoneGroups.map((group) => (
-                      <button
-                        key={group.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onRepresentativeGroupChange) {
-                            onRepresentativeGroupChange(body.id, group.id);
-                          }
-                          setIsRepresentativeDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 text-sm hover:bg-[#333333] transition-colors ${
-                          selectedGroupId === group.id ? 'bg-[#333333]' : ''
-                        }`}
-                        style={{
-                          fontFamily: "'SF Pro', sans-serif",
-                          color: 'white',
-                        }}
-                      >
-                        Group {group.id}
-                      </button>
-                    ))}
+                    {phoneGroups.map((group) => {
+                      const groupMemberIds = group.memberIds;
+                      const groupMemberNames = getMemberNames(groupMemberIds);
+                      const isSelected = selectedGroupId === group.id;
+                      
+                      return (
+                        <button
+                          key={group.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onRepresentativeGroupChange) {
+                              onRepresentativeGroupChange(body.id, group.id);
+                            }
+                            setIsRepresentativeDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-4 py-2.5 hover:bg-[#333333] transition-colors flex items-center ${
+                            isSelected ? 'bg-[#333333]' : ''
+                          }`}
+                          style={{
+                            fontFamily: "'SF Pro', sans-serif",
+                          }}
+                        >
+                          {/* Text content */}
+                          <div className="flex-1 min-w-0">
+                            <div 
+                              className="text-white"
+                              style={{
+                                fontSize: '15px',
+                                fontWeight: 500,
+                                marginBottom: '3px',
+                                lineHeight: '1.2',
+                              }}
+                            >
+                              {groupMemberIds.size} {groupMemberIds.size === 1 ? 'person' : 'people'}
+                            </div>
+                            <div 
+                              style={{
+                                fontSize: '12px',
+                                fontWeight: 400,
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                lineHeight: '1.2',
+                              }}
+                            >
+                              {groupMemberNames.join(', ')}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -2119,7 +2218,28 @@ function Screen({
               className="font-['SF_Pro:Bold',sans-serif] font-bold leading-[normal] relative shrink-0 text-[12.338px] text-nowrap text-white tracking-[-0.116px] whitespace-pre"
               style={{ fontVariationSettings: "'wdth' 100" }}
             >
-              New Group
+              {(() => {
+                // Helper function to get names from member IDs
+                const getNamesFromMemberIds = (memberIds: Set<number>): string => {
+                  const names = Array.from(memberIds)
+                    .map(id => allBodies.find(b => b.id === id)?.name)
+                    .filter((name): name is string => name !== undefined);
+                  return names.join(', ');
+                };
+
+                if (isViewingConfirmedGroupScreen && activeConfirmedGroup) {
+                  const names = getNamesFromMemberIds(activeConfirmedGroup.memberIds);
+                  return names || 'New Group';
+                } else if (isViewingPotentialGroupScreen && activePotentialGroup) {
+                  const names = getNamesFromMemberIds(activePotentialGroup.memberIds);
+                  return names || 'New Group';
+                } else if (allConfirmedPhonesFiltered.length > 0) {
+                  const names = allConfirmedPhonesFiltered.map(phone => phone.name).join(', ');
+                  return names || 'New Group';
+                } else {
+                  return 'New Group';
+                }
+              })()}
             </p>
           </div>
 

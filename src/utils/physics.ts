@@ -27,6 +27,7 @@ export interface RigidBody {
   
   // Profile
   profileImage: string;
+  name: string;
 }
 
 // Calculate moment of inertia for a rectangle
