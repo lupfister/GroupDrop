@@ -21,6 +21,8 @@ interface PotentialGroup {
   id: string;
   memberIds: Set<number>;
   confirmedIds: Set<number>;
+  representativePhoneId?: number; // Phone ID that is representing an existing group (for debugging)
+  representativeGroupId?: string; // Group ID that this potential group represents (for debugging)
 }
 
 interface PhoneWithProximityProps {
@@ -39,6 +41,9 @@ interface PhoneWithProximityProps {
   onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void; // Callback to remove a user from potential group
   isRecentlyRemoved?: boolean; // Flag to suppress notifications for recently removed users
   recentlyRemovedPhones?: Set<number>; // Set of recently removed phone IDs to filter out from display
+  onSetRepresentative?: (phoneId: number, groupId: string) => void; // Callback when phone becomes representative of a group
+  currentRepresentativeGroupId?: string | null; // Currently selected representative group ID
+  onRepresentativeGroupChange?: (phoneId: number, groupId: string | null) => void; // Callback when representative group changes
 }
 
 function Container() {
@@ -175,6 +180,9 @@ function Screen({
   onRemoveUser,
   isRecentlyRemoved,
   recentlyRemovedPhones,
+  onSetRepresentative,
+  currentRepresentativeGroupId,
+  onRepresentativeGroupChange,
 }: {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -191,6 +199,9 @@ function Screen({
   onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void;
   isRecentlyRemoved?: boolean;
   recentlyRemovedPhones?: Set<number>;
+  onSetRepresentative?: (phoneId: number, groupId: string) => void;
+  currentRepresentativeGroupId?: string | null;
+  onRepresentativeGroupChange?: (phoneId: number, groupId: string | null) => void;
 }) {
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
@@ -208,8 +219,24 @@ function Screen({
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [confirmSwipeOffset, setConfirmSwipeOffset] = useState(0);
   const [isConfirmSwiping, setIsConfirmSwiping] = useState(false);
+  const [isRepresentativeDropdownOpen, setIsRepresentativeDropdownOpen] = useState(false);
+  const representativeDropdownRef = useRef<HTMLDivElement>(null);
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
+  
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (representativeDropdownRef.current && !representativeDropdownRef.current.contains(event.target as Node)) {
+        setIsRepresentativeDropdownOpen(false);
+      }
+    };
+    
+    if (isRepresentativeDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isRepresentativeDropdownOpen]);
   
   // Swipe-to-remove state
   const [swipedUser, setSwipedUser] = useState<number | null>(null);
@@ -250,7 +277,8 @@ function Screen({
   // Suppress notifications if this user was recently removed
   const hasNearbyPhones = proximityData.some(data => data.distanceCm <= 8.5);
   const showProximityView = hasNearbyPhones && viewState === 'groupSearch';
-  const showNotification = hasNearbyPhones && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory') && !isRecentlyRemoved;
+  // showNotification will be calculated later after group variables are defined
+  let showNotification = false;
   
   // Handle message icon click to open groups history
   const handleMessageIconClick = () => {
@@ -633,13 +661,17 @@ function Screen({
   // 5. Otherwise: use proximity-based state
   
   // Find which confirmed group matches the active group ID being viewed
-  const activeConfirmedGroup = activeGroupId && phoneConfirmedGroup && phoneConfirmedGroup.id === activeGroupId
-    ? phoneConfirmedGroup
+  // IMPORTANT: Search directly by activeGroupId, not via phoneConfirmedGroup
+  // This ensures we get the correct group even if the phone is in multiple groups
+  const activeConfirmedGroup = activeGroupId && confirmedGroups
+    ? confirmedGroups.get(activeGroupId) || null
     : null;
   
   // Find which potential group matches the active group ID being viewed
-  const activePotentialGroup = activeGroupId && phonePotentialGroup && phonePotentialGroup.id === activeGroupId
-    ? phonePotentialGroup
+  // IMPORTANT: Search directly by activeGroupId, not via phonePotentialGroup
+  // This ensures we get the correct group even if the phone is in multiple groups
+  const activePotentialGroup = activeGroupId && potentialGroups
+    ? potentialGroups.get(activeGroupId) || null
     : null;
 
   // Store member IDs when viewing a potential group (for Bug 2 fix)
@@ -661,6 +693,50 @@ function Screen({
   const isViewingSpecificGroup = activeGroupId !== null;
   const isViewingConfirmedGroupScreen = isViewingSpecificGroup && activeConfirmedGroup !== null;
   const isViewingPotentialGroupScreen = isViewingSpecificGroup && activePotentialGroup !== null;
+  
+  // Calculate if there are new potential group members (phones not already in current group)
+  const hasNewPotentialGroupMembers = (() => {
+    if (!hasNearbyPhones) return false;
+    
+    // Get all nearby phone IDs
+    const nearbyPhoneIds = new Set(
+      proximityData
+        .filter(data => data.distanceCm <= 8.5 && !recentlyRemovedPhones?.has(data.phoneId))
+        .map(data => data.phoneId)
+    );
+    
+    // Special case: If viewing a confirmed group screen, check if nearby phones form a NEW potential group
+    // (i.e., phones that are NOT in the current confirmed group being viewed)
+    if (isViewingConfirmedGroupScreen && activeConfirmedGroup) {
+      // Check if any nearby phones are NOT in the active confirmed group
+      // This indicates a new potential group is forming
+      return Array.from(nearbyPhoneIds).some(phoneId => !activeConfirmedGroup.memberIds.has(phoneId));
+    }
+    
+    // If viewing a specific potential group, check if any nearby phones are NOT in that group
+    if (isViewingPotentialGroupScreen && activePotentialGroup) {
+      // Check if any nearby phones are not in the potential group
+      return Array.from(nearbyPhoneIds).some(phoneId => !activePotentialGroup.memberIds.has(phoneId));
+    }
+    
+    // If not viewing a specific group, check if any nearby phones are not already in any potential group this phone is part of
+    if (phonePotentialGroup) {
+      return Array.from(nearbyPhoneIds).some(phoneId => !phonePotentialGroup.memberIds.has(phoneId));
+    }
+    
+    // If in a confirmed group (but not viewing that group's screen), check if any nearby phones are NOT in that confirmed group
+    if (phoneConfirmedGroup) {
+      // Check if any nearby phones are not in the confirmed group
+      // If all nearby phones are already in the confirmed group, don't show notification
+      return Array.from(nearbyPhoneIds).some(phoneId => !phoneConfirmedGroup.memberIds.has(phoneId));
+    }
+    
+    // If no current group, any nearby phone is a new potential member
+    return nearbyPhoneIds.size > 0;
+  })();
+  
+  // Update showNotification to only show if there are new potential group members
+  showNotification = hasNewPotentialGroupMembers && (viewState === 'homeScreen' || viewState === 'groupConfirm' || viewState === 'groupsHistory') && !isRecentlyRemoved;
   
   // Check if phone has confirmed in a potential group (new group being formed)
   const hasConfirmedInPotentialGroup = phonePotentialGroup && phonePotentialGroup.confirmedIds.has(body.id);
@@ -704,6 +780,13 @@ function Screen({
   // and show ALL unconfirmed members from it simultaneously
   // But also respect the viewing-specific-group logic from HEAD
   const unconfirmedNearbyPhones = (() => {
+    // If viewing a confirmed group screen, there are no unconfirmed members
+    // Confirmed groups are complete - all members have already confirmed
+    // The screen is a snapshot and should not show updates from other groups
+    if (isViewingConfirmedGroupScreen) {
+      return [];
+    }
+    
     // Helper function to get all unconfirmed members from a potential group
     const getUnconfirmedFromGroup = (potentialGroup: PotentialGroup): RigidBody[] => {
       return Array.from(potentialGroup.memberIds)
@@ -819,6 +902,13 @@ function Screen({
     const prevHasUnconfirmed = prevHasUnconfirmedRef.current;
     prevHasUnconfirmedRef.current = hasUnconfirmed;
 
+    // If viewing a confirmed group screen, never show the pill (confirmed groups are complete)
+    if (isViewingConfirmedGroupScreen) {
+      setShowUnconfirmedPill(false);
+      setIsUnconfirmedExiting(false);
+      return;
+    }
+
     // Outside groupConfirm, just follow presence (no special exit animation)
     if (viewState !== 'groupConfirm') {
       setShowUnconfirmedPill(hasUnconfirmed);
@@ -845,7 +935,7 @@ function Screen({
 
       return () => clearTimeout(timeout);
     }
-  }, [unconfirmedNearbyPhones.length, viewState]);
+  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen]);
 
   // Bug 2 Fix: Update activeGroupId when a potential group transitions to confirmed
   // When a potential group becomes confirmed, it gets a new sequential ID (e.g., "potential-1" -> "1")
@@ -1021,6 +1111,17 @@ function Screen({
             }}
             tool={tool}
             recentlyRemovedPhones={recentlyRemovedPhones}
+            onGroupClick={(groupId) => {
+              const navigateToGroupScreen = () => {
+                updateViewState('groupConfirm', groupId);
+              };
+              
+              if ('startViewTransition' in document) {
+                (document as any).startViewTransition(navigateToGroupScreen);
+              } else {
+                navigateToGroupScreen();
+              }
+            }}
           />
         </div>
       )}
@@ -1154,81 +1255,98 @@ function Screen({
               {/* All confirmed users filling the gray circle in groupConfirm */}
               {viewState === 'groupConfirm' &&
                 (() => {
-                  // Show up to 3 users in the group icon
-                  // If there are more than 3 users total, exclude the device's own user and show other users
+                  // Show up to 7 users in the group icon
+                  // If there are more than 7 users total, exclude the device's own user and show up to 7 other users
                   let usersToDisplay: RigidBody[];
                   
-                  if (allConfirmedPhonesFiltered.length <= 3) {
-                    // 3 or fewer users: show all (including device's own user)
+                  if (allConfirmedPhonesFiltered.length <= 7) {
+                    // 7 or fewer users: show all (including device's own user)
                     usersToDisplay = allConfirmedPhonesFiltered;
                   } else {
-                    // More than 3 users: exclude device's own user and show up to 3 other users
+                    // More than 7 users: exclude device's own user and show up to 7 other users
                     const otherUsers = allConfirmedPhonesFiltered.filter(phone => phone.id !== body.id);
-                    usersToDisplay = otherUsers.slice(0, 3);
+                    usersToDisplay = otherUsers.slice(0, 7);
                   }
                   
                   return usersToDisplay.map((user, index) => {
                     const totalCircles = usersToDisplay.length;
                     const centerX = 24; // center of 48px container
-                  const centerY = 24;
-                  const containerRadius = 24;
-                  // Slightly smaller radius so circles can be larger and closer together
-                  const layoutRadius =
-                    totalCircles === 1 ? 0 : 12;
-                  const margin = 0.25;
+                    const centerY = 24;
+                    const containerRadius = 24;
+                    const margin = 0.25;
 
-                  // Base size constraints (larger to further reduce visible gap)
-                  const baseDiameter = 24;
-                  const minDiameter = 8;
+                    // Dynamic layout radius based on number of circles
+                    // For more circles, use a larger radius to spread them out
+                    let layoutRadius: number;
+                    if (totalCircles === 1) {
+                      layoutRadius = 0;
+                    } else if (totalCircles === 2) {
+                      layoutRadius = 8;
+                    } else if (totalCircles === 3) {
+                      layoutRadius = 10;
+                    } else if (totalCircles === 4) {
+                      layoutRadius = 11;
+                    } else if (totalCircles === 5) {
+                      layoutRadius = 12;
+                    } else if (totalCircles === 6) {
+                      layoutRadius = 13;
+                    } else {
+                      // 7 circles
+                      layoutRadius = 14;
+                    }
 
-                  let circleSize = baseDiameter;
+                    // Base size constraints - adjust based on number of circles
+                    const baseDiameter = totalCircles <= 3 ? 24 : totalCircles <= 5 ? 18 : 14;
+                    const minDiameter = 8;
 
-                  if (totalCircles > 1) {
-                    const neighborDist =
-                      2 * layoutRadius * Math.sin(Math.PI / totalCircles);
-                    const maxDiameterFromNeighbors = neighborDist - 2 * margin;
-                    circleSize = Math.min(circleSize, maxDiameterFromNeighbors);
-                  }
+                    let circleSize = baseDiameter;
 
-                  // Ensure we stay inside container
-                  const maxDiameterFromContainer =
-                    2 * (containerRadius - layoutRadius - margin);
-                  circleSize = Math.min(circleSize, maxDiameterFromContainer);
-                  circleSize = Math.max(minDiameter, circleSize);
+                    if (totalCircles > 1) {
+                      const neighborDist =
+                        2 * layoutRadius * Math.sin(Math.PI / totalCircles);
+                      const maxDiameterFromNeighbors = neighborDist - 2 * margin;
+                      circleSize = Math.min(circleSize, maxDiameterFromNeighbors);
+                    }
 
-                  const r = circleSize / 2;
+                    // Ensure we stay inside container
+                    const maxDiameterFromContainer =
+                      2 * (containerRadius - layoutRadius - margin);
+                    circleSize = Math.min(circleSize, maxDiameterFromContainer);
+                    circleSize = Math.max(minDiameter, circleSize);
 
-                  const angle =
-                    totalCircles === 1
-                      ? 0
-                      : (2 * Math.PI * index) / totalCircles;
+                    const r = circleSize / 2;
 
-                  const x = centerX + layoutRadius * Math.cos(angle);
-                  const y = centerY + layoutRadius * Math.sin(angle);
+                    const angle =
+                      totalCircles === 1
+                        ? 0
+                        : (2 * Math.PI * index) / totalCircles;
 
-                  const left = x - r;
-                  const top = y - r;
+                    const x = centerX + layoutRadius * Math.cos(angle);
+                    const y = centerY + layoutRadius * Math.sin(angle);
 
-                  return (
-                    <div
-                      key={user.id}
-                      className="absolute overflow-hidden"
-                      style={{
-                        left,
-                        top,
-                        width: circleSize,
-                        height: circleSize,
-                        borderRadius: circleSize / 2,
-                        boxShadow: '0 0 6px rgba(0,0,0,0.45)',
-                      }}
-                    >
-                      <img
-                        alt=""
-                        className="absolute inset-0 max-w-none object-cover size-full pointer-events-none"
-                        src={user.profileImage}
-                      />
-                    </div>
-                  );
+                    const left = x - r;
+                    const top = y - r;
+
+                    return (
+                      <div
+                        key={user.id}
+                        className="absolute overflow-hidden"
+                        style={{
+                          left,
+                          top,
+                          width: circleSize,
+                          height: circleSize,
+                          borderRadius: circleSize / 2,
+                          boxShadow: '0 0 6px rgba(0,0,0,0.45)',
+                        }}
+                      >
+                        <img
+                          alt=""
+                          className="absolute inset-0 max-w-none object-cover size-full pointer-events-none"
+                          src={user.profileImage}
+                        />
+                      </div>
+                    );
                   });
                 })()}
           </div>
@@ -1500,6 +1618,99 @@ function Screen({
             GroupDrop
           </p>
           
+          {/* Representative Group Dropdown - only visible in groupSearch when there are nearby phones */}
+          {viewState === 'groupSearch' && hasNearbyPhones && onRepresentativeGroupChange && (() => {
+            // Get all groups this phone is a member of
+            const phoneGroups = confirmedGroups 
+              ? Array.from(confirmedGroups.values()).filter(group => group.memberIds.has(body.id))
+              : [];
+            
+            // Always show dropdown (even if phone isn't in any groups - they can select "New Group")
+            const selectedGroupId = currentRepresentativeGroupId || null;
+            
+            return (
+              <div 
+                ref={representativeDropdownRef}
+                className="absolute"
+                style={{
+                  left: '24px',
+                  top: `${groupTitleTop + (isHomeNotification ? 28 : 38)}px`,
+                  zIndex: 100,
+                  opacity: viewState === 'groupSearch' ? 1 : 0,
+                  pointerEvents: viewState === 'groupSearch' && tool === 'interact' ? 'auto' : 'none',
+                  transition: `opacity ${springDuration} ${springCurve}`,
+                }}
+              >
+                <button
+                  onClick={(e) => {
+                    if (tool !== 'interact') return;
+                    e.stopPropagation();
+                    setIsRepresentativeDropdownOpen(!isRepresentativeDropdownOpen);
+                  }}
+                  className="bg-[#222222] text-white px-3 py-1.5 rounded-lg text-sm flex items-center gap-2 hover:bg-[#333333] transition-colors"
+                  style={{
+                    fontFamily: "'SF Pro', sans-serif",
+                    fontSize: '12px',
+                    minWidth: '120px',
+                  }}
+                >
+                  <span>{selectedGroupId ? `Group ${selectedGroupId}` : 'New Group'}</span>
+                  <span style={{ fontSize: '10px' }}>{isRepresentativeDropdownOpen ? '▲' : '▼'}</span>
+                </button>
+                
+                {isRepresentativeDropdownOpen && (
+                  <div 
+                    className="absolute mt-1 bg-[#222222] rounded-lg shadow-lg overflow-hidden"
+                    style={{
+                      minWidth: '120px',
+                      zIndex: 101,
+                    }}
+                  >
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onRepresentativeGroupChange) {
+                          onRepresentativeGroupChange(body.id, null);
+                        }
+                        setIsRepresentativeDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-[#333333] transition-colors ${
+                        selectedGroupId === null ? 'bg-[#333333]' : ''
+                      }`}
+                      style={{
+                        fontFamily: "'SF Pro', sans-serif",
+                        color: 'white',
+                      }}
+                    >
+                      New Group
+                    </button>
+                    {phoneGroups.map((group) => (
+                      <button
+                        key={group.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onRepresentativeGroupChange) {
+                            onRepresentativeGroupChange(body.id, group.id);
+                          }
+                          setIsRepresentativeDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-sm hover:bg-[#333333] transition-colors ${
+                          selectedGroupId === group.id ? 'bg-[#333333]' : ''
+                        }`}
+                        style={{
+                          fontFamily: "'SF Pro', sans-serif",
+                          color: 'white',
+                        }}
+                      >
+                        Group {group.id}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          
           {/* Scanning for Friends text - only visible in full view */}
           <p 
             className="absolute font-['SF_Pro:Regular',sans-serif] font-normal leading-[normal] left-[24px] text-[#666666] text-[14px] text-nowrap top-[57px] tracking-[-0.1504px] whitespace-pre" 
@@ -1736,8 +1947,8 @@ function Screen({
         </div>
       )}
 
-      {/* Proximity notification overlay for groupConfirm screen - only show when viewing an actual confirmed group */}
-      {viewState === 'groupConfirm' && isViewingConfirmedGroupScreen && showNotification && (
+      {/* Proximity notification overlay for groupConfirm screen - show even when viewing confirmed group screen if new potential group */}
+      {viewState === 'groupConfirm' && showNotification && (
         <div
           onClick={handleNotificationClick}
           style={{
@@ -1933,8 +2144,8 @@ function Screen({
         </div>
       )}
 
-      {/* Proximity notification overlay for groupsHistory screen */}
-      {viewState === 'groupsHistory' && showNotification && (
+      {/* Proximity notification overlay for groupsHistory screen - hide when viewing confirmed group screen */}
+      {viewState === 'groupsHistory' && !isViewingConfirmedGroupScreen && showNotification && (
         <div
           onClick={handleNotificationClick}
           style={{
@@ -2157,6 +2368,9 @@ export function PhoneWithProximity({
   onRemoveUser,
   isRecentlyRemoved,
   recentlyRemovedPhones,
+  onSetRepresentative,
+  currentRepresentativeGroupId,
+  onRepresentativeGroupChange,
 }: PhoneWithProximityProps) {
   const [screenViewState, setScreenViewState] = useState<'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory'>('homeScreen');
   const [screenSwipeOffset, setScreenSwipeOffset] = useState(0);
@@ -2219,6 +2433,9 @@ export function PhoneWithProximity({
           onRemoveUser={onRemoveUser}
           isRecentlyRemoved={isRecentlyRemoved}
           recentlyRemovedPhones={recentlyRemovedPhones}
+          onSetRepresentative={onSetRepresentative}
+          currentRepresentativeGroupId={currentRepresentativeGroupId}
+          onRepresentativeGroupChange={onRepresentativeGroupChange}
         />
       </div>
       <Bezel />

@@ -14,6 +14,7 @@ interface GroupsHistoryProps {
   onBack: () => void;
   tool: 'move' | 'interact';
   recentlyRemovedPhones?: Set<number>;
+  onGroupClick?: (groupId: string) => void;
 }
 
 function HomeIndicator() {
@@ -79,7 +80,7 @@ function StatusBar() {
   );
 }
 
-export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recentlyRemovedPhones }: GroupsHistoryProps) {
+export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recentlyRemovedPhones, onGroupClick }: GroupsHistoryProps) {
   const groupsArray = Array.from(confirmedGroups.values());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   
@@ -89,9 +90,24 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recent
       scrollContainerRef.current.scrollTop = 0;
     }
   }, [groupsArray.length]);
+
+  const handleGroupClick = (groupId: string) => {
+    if (tool !== 'interact') return; // Prevent clicks in move mode
+    if (onGroupClick) {
+      onGroupClick(groupId);
+    }
+  };
+
+  const handleGroupKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, groupId: string) => {
+    if (tool !== 'interact') return; // Prevent keyboard interaction in move mode
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleGroupClick(groupId);
+    }
+  };
   
   return (
-    <div className="bg-black overflow-clip relative size-full" data-name="GroupsHistory" style={{ borderRadius: '24px', willChange: 'opacity, transform', viewTransitionName: 'messages-icon' }}>
+    <div className="bg-black overflow-hidden relative size-full" data-name="GroupsHistory" style={{ borderRadius: '24px', willChange: 'opacity, transform', viewTransitionName: 'messages-icon' }}>
       {/* Back button */}
       <div className="absolute flex items-center justify-center left-[18.51px] size-[33.93px] top-[56.53px]" style={{ willChange: 'transform, opacity', animation: 'fadeInSlideRight 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both' }}>
         <div className="flex-none scale-y-[-100%]">
@@ -151,12 +167,17 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recent
               return (
                 <div
                   key={group.id}
-                  className="bg-[#222222] p-4"
+                  className="bg-[#222222] p-4 cursor-pointer transition-opacity hover:opacity-80 active:opacity-70"
                   style={{
                     borderRadius: '16px',
                     willChange: 'transform, opacity',
                     animation: `fadeInScale 0.45s cubic-bezier(0.22, 1, 0.36, 1) ${index * 0.05}s both`,
                   }}
+                  tabIndex={tool === 'interact' ? 0 : -1}
+                  aria-label={`Open Group ${group.id} with ${members.length} member${members.length !== 1 ? 's' : ''}`}
+                  role="button"
+                  onClick={() => handleGroupClick(group.id)}
+                  onKeyDown={(e) => handleGroupKeyDown(e, group.id)}
                 >
                   <div className="flex items-center mb-3" style={{ padding: '8px', gap: '16px' }}>
                     <div className="flex -space-x-2">

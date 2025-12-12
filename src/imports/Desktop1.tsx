@@ -21,6 +21,8 @@ interface PotentialGroup {
   id: string; // Unique identifier for the group
   memberIds: Set<number>; // Phone IDs in this potential group
   confirmedIds: Set<number>; // Phone IDs that have confirmed
+  representativePhoneId?: number; // Phone ID that is representing an existing group (for debugging)
+  representativeGroupId?: string; // Group ID that this potential group represents (for debugging)
 }
 
 interface ConfirmedGroup {
@@ -137,8 +139,14 @@ export default function Desktop() {
   // Track phones that were recently removed to suppress notifications
   const [recentlyRemovedPhones, setRecentlyRemovedPhones] = useState<Set<number>>(new Set());
   const recentlyRemovedPhonesRef = useRef<Set<number>>(new Set());
+  // Track phones that are representatives of existing groups (phoneId -> groupId)
+  const [representativePhones, setRepresentativePhones] = useState<Map<number, string>>(new Map());
+  const representativePhonesRef = useRef<Map<number, string>>(new Map());
+  // Track which group each phone is currently representing (phoneId -> groupId | null)
+  // null means "new group", string means existing group ID
+  const [phoneRepresentativeGroups, setPhoneRepresentativeGroups] = useState<Map<number, string | null>>(new Map());
+  const phoneRepresentativeGroupsRef = useRef<Map<number, string | null>>(new Map());
   const [showDebugMenu, setShowDebugMenu] = useState(true);
-  const nextGroupIdRef = useRef(1);
   const nextConfirmedGroupIdRef = useRef(1);
   const potentialGroupsRef = useRef<Map<string, PotentialGroup>>(new Map());
   const confirmedGroupsRef = useRef<Map<string, ConfirmedGroup>>(new Map());
@@ -155,6 +163,14 @@ export default function Desktop() {
   useEffect(() => {
     recentlyRemovedPhonesRef.current = recentlyRemovedPhones;
   }, [recentlyRemovedPhones]);
+  
+  useEffect(() => {
+    representativePhonesRef.current = representativePhones;
+  }, [representativePhones]);
+  
+  useEffect(() => {
+    phoneRepresentativeGroupsRef.current = phoneRepresentativeGroups;
+  }, [phoneRepresentativeGroups]);
   const [panX, setPanX] = useState(0);
   const [panY, setPanY] = useState(0);
   const [patternOffsetX, setPatternOffsetX] = useState(0);
@@ -697,6 +713,72 @@ export default function Desktop() {
     });
   };
 
+  // Handle phone becoming a representative of an existing group
+  const handleSetRepresentative = (phoneId: number, groupId: string) => {
+    setRepresentativePhones(prev => {
+      const next = new Map(prev);
+      next.set(phoneId, groupId);
+      representativePhonesRef.current = next;
+      return next;
+    });
+    // Also set the representative group selection
+    handleRepresentativeGroupChange(phoneId, groupId);
+  };
+
+  // Handle phone changing which group they're representing
+  const handleRepresentativeGroupChange = (phoneId: number, groupId: string | null) => {
+    setPhoneRepresentativeGroups(prev => {
+      const next = new Map(prev);
+      next.set(phoneId, groupId);
+      phoneRepresentativeGroupsRef.current = next;
+      
+      // Find all phones in the same clump (in proximity)
+      const phoneBody = bodiesRef.current.find(b => b.id === phoneId);
+      if (phoneBody) {
+        const phoneProximityData = calculateProximityData(phoneBody);
+        const nearbyPhoneIds = phoneProximityData
+          .filter(data => data.distanceCm <= 8.5)
+          .map(data => data.phoneId);
+        
+        // Sync to all phones in the same clump (in proximity)
+        nearbyPhoneIds.forEach(nearbyPhoneId => {
+          if (nearbyPhoneId !== phoneId) {
+            next.set(nearbyPhoneId, groupId);
+          }
+        });
+      }
+      
+      // Also sync to phones in the same potential group (if exists)
+      const phonePotentialGroup = potentialGroupsRef.current 
+        ? Array.from(potentialGroupsRef.current.values()).find(group => group.memberIds.has(phoneId))
+        : undefined;
+      
+      if (phonePotentialGroup) {
+        // Sync to all phones in the same potential group
+        phonePotentialGroup.memberIds.forEach(memberId => {
+          if (memberId !== phoneId) {
+            next.set(memberId, groupId);
+          }
+        });
+      }
+      
+      return next;
+    });
+    
+    // If setting to an existing group, also mark as representative
+    if (groupId !== null) {
+      handleSetRepresentative(phoneId, groupId);
+    } else {
+      // If setting to null (new group), remove from representatives
+      setRepresentativePhones(prev => {
+        const next = new Map(prev);
+        next.delete(phoneId);
+        representativePhonesRef.current = next;
+        return next;
+      });
+    }
+  };
+
   // Handle removing a user from a potential group
   // Works for groups of any size (2, 3, 4, etc.)
   // Any user can remove any other user from the group
@@ -947,8 +1029,12 @@ export default function Desktop() {
       return false;
     };
     
-    // Find all connected components and create/update groups
+    // Find all connected components and create ONE potential group per clump
+    // If a clump matches an existing confirmed group, skip it
     const newGroups = new Map<string, PotentialGroup>();
+    const currentClumps = new Map<string, Set<number>>(); // Track clumps by sorted member key
+    let newGroupCounter = 0; // Track how many new groups we're creating in this cycle
+    
     for (const body of activeBodies) {
       if (!visited.has(body.id) && proximityMap.has(body.id)) {
         const component = findConnectedComponent(body.id);
@@ -963,99 +1049,216 @@ export default function Desktop() {
             continue;
           }
           
-          // Find existing groups that overlap with this component (have at least one member in common)
-          // This ensures all phones in proximity are included in the same group
-          const overlappingGroupIds: string[] = [];
-          const allMergedMemberIds = new Set(filteredComponent);
-          const allMergedConfirmedIds = new Set<number>();
-          
-          potentialGroupsRef.current.forEach((group, groupId) => {
-            const existingMembers = Array.from(group.memberIds);
-            // Check if this group overlaps with the new component (has at least one member in common)
-            const hasOverlap = existingMembers.some(id => filteredComponent.has(id));
-            
-            if (hasOverlap) {
-              overlappingGroupIds.push(groupId);
-              // Merge members from overlapping group
-              existingMembers.forEach(id => allMergedMemberIds.add(id));
-              // Merge confirmed IDs from overlapping group
-              Array.from(group.confirmedIds).forEach(id => allMergedConfirmedIds.add(id));
+          // Check if any member is a representative of an existing group
+          // If so, create a potential group that includes the representative's confirmed group members + new members
+          // First check phoneRepresentativeGroups (from dropdown selection), then fallback to representativePhones
+          let representativeGroupId: string | null = null;
+          let representativePhoneId: number | null = null;
+          for (const memberId of filteredComponent) {
+            // Check dropdown selection first
+            const selectedRepGroupId = phoneRepresentativeGroupsRef.current.get(memberId);
+            if (selectedRepGroupId !== undefined && selectedRepGroupId !== null) {
+              representativeGroupId = selectedRepGroupId;
+              representativePhoneId = memberId;
+              break; // Use the first representative found
             }
-          });
+            // Fallback to old representative system
+            const repGroupId = representativePhonesRef.current.get(memberId);
+            if (repGroupId) {
+              representativeGroupId = repGroupId;
+              representativePhoneId = memberId;
+              break; // Use the first representative found
+            }
+          }
           
-          // Use the first overlapping group's ID, or create a new one
-          const groupId = overlappingGroupIds.length > 0 
-            ? overlappingGroupIds[0] 
-            : `potential-${nextGroupIdRef.current++}`;
+          // If a representative is found, create a potential group that includes confirmed group members + new members
+          if (representativeGroupId && representativePhoneId !== null) {
+            const representativeGroup = confirmedGroupsRef.current.get(representativeGroupId);
+            if (representativeGroup) {
+              // Find new members (those not already in the representative group)
+              const newMembers = Array.from(filteredComponent).filter(
+                id => !representativeGroup.memberIds.has(id)
+              );
+              
+              // If there are new members, create a potential group that includes:
+              // - All members from the confirmed group (already confirmed)
+              // - All new members (need to confirm)
+              if (newMembers.length > 0) {
+                // Create a combined member set
+                const combinedMembers = new Set<number>([
+                  ...Array.from(representativeGroup.memberIds),
+                  ...newMembers
+                ]);
+                
+                // Only the representative and new members need to confirm
+                // Other existing confirmed group members don't need to confirm again
+                const confirmedIds = new Set<number>();
+                // Don't pre-confirm anyone - representative and new members both need to confirm
+                
+                // Create a key for this potential group (sorted member IDs)
+                const memberArray = Array.from(combinedMembers).sort((a, b) => a - b);
+                const clumpKey = memberArray.join(',');
+                
+                // Check if we already have a potential group for this representative's group
+                // Look for a potential group that contains all the confirmed group members
+                let existingPotentialGroupId: string | null = null;
+                let existingPotentialGroup: PotentialGroup | undefined = undefined;
+                
+                for (const [groupId, group] of potentialGroupsRef.current.entries()) {
+                  const groupMembers = Array.from(group.memberIds).sort((a, b) => a - b);
+                  const groupKey = groupMembers.join(',');
+                  
+                  // Check if this potential group contains all confirmed group members
+                  const containsAllConfirmed = Array.from(representativeGroup.memberIds).every(
+                    id => group.memberIds.has(id)
+                  );
+                  
+                  if (containsAllConfirmed) {
+                    existingPotentialGroupId = groupId;
+                    existingPotentialGroup = group;
+                    break;
+                  }
+                }
+                
+                // Use existing potential group ID or create a new one
+                let potentialGroupId: string;
+                if (existingPotentialGroupId) {
+                  potentialGroupId = existingPotentialGroupId;
+                  // Update the existing group to include new members
+                  const updatedMemberIds = new Set<number>(existingPotentialGroup!.memberIds);
+                  newMembers.forEach(id => updatedMemberIds.add(id));
+                  
+                  // Preserve existing confirmedIds (representative and new members need to confirm)
+                  const updatedConfirmedIds = new Set<number>(existingPotentialGroup!.confirmedIds);
+                  
+                  newGroups.set(potentialGroupId, {
+                    id: potentialGroupId,
+                    memberIds: updatedMemberIds,
+                    confirmedIds: updatedConfirmedIds,
+                    representativePhoneId: existingPotentialGroup!.representativePhoneId || representativePhoneId,
+                    representativeGroupId: existingPotentialGroup!.representativeGroupId || representativeGroupId,
+                  });
+                } else {
+                  // Create a new potential group
+                  newGroupCounter++;
+                  potentialGroupId = `potential-rep-${representativeGroupId}-${potentialGroupsRef.current.size + newGroupCounter}`;
+                  
+                  newGroups.set(potentialGroupId, {
+                    id: potentialGroupId,
+                    memberIds: combinedMembers,
+                    confirmedIds: confirmedIds, // Representative and new members need to confirm
+                    representativePhoneId: representativePhoneId,
+                    representativeGroupId: representativeGroupId,
+                  });
+                }
+                
+                // Track this clump so we don't process it again
+                currentClumps.set(clumpKey, combinedMembers);
+                
+                console.log(`Created potential group ${potentialGroupId} for representative group ${representativeGroupId} with ${newMembers.length} new members`);
+                continue; // Skip normal group creation for this clump
+              }
+            }
+          }
           
-          // Get the existing group if it exists
-          const existingGroup = potentialGroupsRef.current.get(groupId);
+          // Create a key for this clump (sorted member IDs)
+          const memberArray = Array.from(filteredComponent).sort((a, b) => a - b);
+          const clumpKey = memberArray.join(',');
           
-          // Ensure we don't include any recently removed phones
-          const cleanMemberIds = new Set(
-            Array.from(allMergedMemberIds).filter(id => !recentlyRemovedPhonesRef.current.has(id))
-          );
+          // Skip if we've already processed this clump
+          if (currentClumps.has(clumpKey)) {
+            continue;
+          }
           
-          // Merge confirmed IDs from existing group and overlapping groups
-          // Filter out recently removed phones
+          currentClumps.set(clumpKey, filteredComponent);
+          
+          // Find existing potential group with the same members (exact match)
+          let existingGroupId: string | null = null;
+          let existingGroup: PotentialGroup | undefined = undefined;
+          
+          for (const [groupId, group] of potentialGroupsRef.current.entries()) {
+            const existingMembers = Array.from(group.memberIds).sort((a, b) => a - b);
+            const existingKey = existingMembers.join(',');
+            
+            if (existingKey === clumpKey) {
+              existingGroupId = groupId;
+              existingGroup = group;
+              break;
+            }
+          }
+          
+          // Use existing group ID or create a new one based on current number of potential groups
+          let groupId: string;
+          if (existingGroupId) {
+            groupId = existingGroupId;
+          } else {
+            newGroupCounter++;
+            groupId = `potential-${potentialGroupsRef.current.size + newGroupCounter}`;
+          }
+          
+          // Preserve confirmed IDs from existing group (filter out recently removed phones)
           const cleanConfirmedIds = new Set<number>();
           if (existingGroup) {
             Array.from(existingGroup.confirmedIds)
-              .filter(id => !recentlyRemovedPhonesRef.current.has(id) && cleanMemberIds.has(id))
+              .filter(id => !recentlyRemovedPhonesRef.current.has(id) && filteredComponent.has(id))
               .forEach(id => cleanConfirmedIds.add(id));
           }
-          // Also include confirmed IDs from other overlapping groups
-          Array.from(allMergedConfirmedIds)
-            .filter(id => !recentlyRemovedPhonesRef.current.has(id) && cleanMemberIds.has(id))
-            .forEach(id => cleanConfirmedIds.add(id));
           
+          // Create ONE potential group for this clump
           newGroups.set(groupId, {
             id: groupId,
-            memberIds: cleanMemberIds,
+            memberIds: filteredComponent,
             confirmedIds: cleanConfirmedIds,
-          });
-          
-          // Remove all overlapping groups (we'll merge them into one)
-          overlappingGroupIds.forEach(id => {
-            if (id !== groupId) {
-              newGroups.delete(id);
-            }
           });
         }
       }
     }
     
-    // Clean up: verify all existing potential groups still have members in proximity
-    // Also remove recently removed phones from existing groups
+    // Clean up: remove potential groups that don't match any current clump
+    // Also remove recently removed phones and groups that match confirmed groups
     setPotentialGroups(prev => {
       const next = new Map(prev);
+      
+      // Create a set of current clump keys for quick lookup
+      const currentClumpKeys = new Set<string>();
+      currentClumps.forEach((members) => {
+        const memberArray = Array.from(members).sort((a, b) => a - b);
+        currentClumpKeys.add(memberArray.join(','));
+      });
       
       // First, update/add groups from current proximity detection
       newGroups.forEach((group, groupId) => {
         next.set(groupId, group);
       });
       
-      // Then, verify all groups still meet proximity requirements
-      // Only check groups that weren't just created/updated (newly created ones are already verified)
+      // Remove groups that don't match any current clump
       next.forEach((group, groupId) => {
+        // Skip if this group was just created/updated
+        if (newGroups.has(groupId)) return;
+        
         // Remove recently removed phones from the group
         const membersWithoutRemoved = Array.from(group.memberIds).filter(id => 
           !recentlyRemovedPhonesRef.current.has(id)
         );
         
-        if (!newGroups.has(groupId)) {
-          // Check if all members are still in proximity
-          if (!areMembersInProximity(new Set(membersWithoutRemoved))) {
-            next.delete(groupId);
-            return;
-          }
+        // If group becomes too small, delete it
+        if (membersWithoutRemoved.length < 2) {
+          next.delete(groupId);
+          return;
+        }
+        
+        // Check if this group matches a current clump
+        const memberArray = membersWithoutRemoved.sort((a, b) => a - b);
+        const groupKey = memberArray.join(',');
+        
+        if (!currentClumpKeys.has(groupKey)) {
+          // This group doesn't match any current clump - delete it
+          next.delete(groupId);
+          return;
         }
         
         // Update the group to remove recently removed phones
-        if (membersWithoutRemoved.length < 2) {
-          next.delete(groupId);
-        } else if (membersWithoutRemoved.length !== group.memberIds.size) {
-          // Only update if we actually removed some members
+        if (membersWithoutRemoved.length !== group.memberIds.size) {
           const newMemberIds = new Set(membersWithoutRemoved);
           const newConfirmedIds = new Set(
             Array.from(group.confirmedIds).filter(id => !recentlyRemovedPhonesRef.current.has(id))
@@ -1081,10 +1284,80 @@ export default function Desktop() {
   // Check if all members of a potential group have confirmed, then move to confirmed groups
   useEffect(() => {
     potentialGroups.forEach((group, groupId) => {
-      const allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
+      // Check if this is a representative group potential group (starts with "potential-rep-")
+      const isRepresentativeGroup = groupId.startsWith('potential-rep-');
+      
+      let allConfirmed = false;
+      
+      if (isRepresentativeGroup && group.representativeGroupId && group.representativePhoneId !== undefined) {
+        // For representative groups, only check if representative and new members have confirmed
+        // Existing group members don't need to confirm again
+        const representativeGroup = confirmedGroupsRef.current.get(group.representativeGroupId);
+        if (representativeGroup) {
+          // Find members who need to confirm: representative + new members (not in existing group)
+          const membersWhoNeedToConfirm = Array.from(group.memberIds).filter(
+            id => !representativeGroup.memberIds.has(id) || id === group.representativePhoneId
+          );
+          
+          // Check if all members who need to confirm have confirmed
+          allConfirmed = membersWhoNeedToConfirm.length > 0 && 
+                        membersWhoNeedToConfirm.every(id => group.confirmedIds.has(id));
+        } else {
+          // Fallback: check all members if we can't find the representative group
+          allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
+        }
+      } else {
+        // For normal groups, all members need to confirm
+        allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
+      }
       
       if (allConfirmed && group.memberIds.size >= 2) {
-        // Generate a new sequential ID for confirmed groups (e.g., "1", "2", "3")
+        if (isRepresentativeGroup) {
+          // Extract the representative group ID from the potential group ID
+          // Format: "potential-rep-{groupId}-{counter}"
+          const match = groupId.match(/^potential-rep-(.+?)-/);
+          const representativeGroupId = match && match[1] ? match[1] : group.representativeGroupId;
+          
+          if (representativeGroupId) {
+            const representativeGroup = confirmedGroupsRef.current.get(representativeGroupId);
+            
+            if (representativeGroup) {
+              // Find new members (those not already in the representative group)
+              const newMembers = Array.from(group.memberIds).filter(
+                id => !representativeGroup.memberIds.has(id)
+              );
+              
+              // Merge new members into the existing confirmed group
+              if (newMembers.length > 0) {
+                setConfirmedGroups(prev => {
+                  const next = new Map(prev);
+                  const updatedGroup = next.get(representativeGroupId);
+                  if (updatedGroup) {
+                    const newMemberIds = new Set(updatedGroup.memberIds);
+                    newMembers.forEach(id => newMemberIds.add(id));
+                    next.set(representativeGroupId, {
+                      ...updatedGroup,
+                      memberIds: newMemberIds,
+                    });
+                  }
+                  return next;
+                });
+                console.log(`Merged ${newMembers.length} confirmed members into representative group ${representativeGroupId}`);
+              }
+              
+              // Remove from potential groups
+              setPotentialGroups(prev => {
+                const next = new Map(prev);
+                next.delete(groupId);
+                return next;
+              });
+              
+              return; // Skip normal confirmed group creation
+            }
+          }
+        }
+        
+        // Normal flow: Generate a new sequential ID for confirmed groups (e.g., "1", "2", "3")
         const confirmedGroupId = String(nextConfirmedGroupIdRef.current++);
         
         // Move to confirmed groups with new sequential ID
@@ -1195,7 +1468,7 @@ export default function Desktop() {
     <div style={{ width: '100vw', height: '100vh', position: 'fixed', top: 0, left: 0 }}>
       {/* Debug Menu - Top Left - Fixed outside zoom transform */}
       {showDebugMenu && (
-        <div className="absolute top-4 left-4 z-50 pointer-events-none">
+        <div className="absolute z-50 pointer-events-none" style={{ left: '12px', top: '12px' }}>
           <div 
             className="bg-white shadow-lg max-w-md max-h-[80vh] overflow-auto pointer-events-auto" 
             style={{ 
@@ -1250,32 +1523,46 @@ export default function Desktop() {
                           padding: '12px'
                         }}
                       >
-                        <div style={{ 
-                          fontSize: '14px', 
-                          fontWeight: 700, 
+                        <div style={{
+                          fontSize: '14px',
+                          fontWeight: 700,
                           color: '#000000',
                           marginBottom: '8px'
                         }}>
                           Group{groupId}
+                          {group.representativePhoneId && (
+                            <span style={{ 
+                              fontSize: '12px', 
+                              fontWeight: 400, 
+                              color: '#0066cc',
+                              marginLeft: '8px'
+                            }}>
+                              [REP: Phone{group.representativePhoneId} → Group {group.representativeGroupId}]
+                            </span>
+                          )}
                         </div>
-                        <div style={{ 
-                          display: 'flex', 
-                          flexWrap: 'wrap', 
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
                           gap: '12px 12px',
                           rowGap: '4px'
                         }}>
-                          {Array.from(group.memberIds).map((phoneId) => (
-                            <span 
-                              key={phoneId} 
-                              style={{ 
-                                fontSize: '13px',
-                                fontWeight: 400,
-                                color: '#737373'
-                              }}
-                            >
-                              Phone{phoneId} ✓
-                            </span>
-                          ))}
+                          {Array.from(group.memberIds).map((phoneId) => {
+                            const isConfirmed = group.confirmedIds.has(phoneId);
+                            const isRepresentative = phoneId === group.representativePhoneId;
+                            return (
+                              <span 
+                                key={phoneId} 
+                                style={{ 
+                                  fontSize: '13px',
+                                  fontWeight: isRepresentative ? 700 : 400,
+                                  color: isRepresentative ? '#0066cc' : isConfirmed ? '#737373' : '#999999'
+                                }}
+                              >
+                                Phone{phoneId} {isConfirmed ? '✓' : '○'} {isRepresentative ? '👑' : ''}
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     ))}
@@ -1395,14 +1682,13 @@ export default function Desktop() {
       
       {/* Debug Menu Toggle Button - Fixed outside zoom transform */}
       {!showDebugMenu && (
-        <div className="absolute top-4 left-4 z-50 pointer-events-none">
-          <button
-            onClick={() => setShowDebugMenu(true)}
-            className="bg-white rounded-lg shadow-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 pointer-events-auto"
-          >
-            Debug
-          </button>
-        </div>
+        <button
+          onClick={() => setShowDebugMenu(true)}
+          className="bg-white shadow-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 pointer-events-auto z-50"
+          style={{ position: 'absolute', left: '12px', top: '12px', borderRadius: '24px' }}
+        >
+          Debug
+        </button>
       )}
 
       {/* Container for canvas */}
@@ -1477,6 +1763,9 @@ export default function Desktop() {
                 onRemoveUser={handleRemoveUser}
                 isRecentlyRemoved={recentlyRemovedPhones.has(body.id)}
                 recentlyRemovedPhones={recentlyRemovedPhones}
+                onSetRepresentative={handleSetRepresentative}
+                currentRepresentativeGroupId={phoneRepresentativeGroups.get(body.id) || null}
+                onRepresentativeGroupChange={handleRepresentativeGroupChange}
               />
             </DraggablePhone>
           ))}
@@ -1485,7 +1774,7 @@ export default function Desktop() {
 
       {/* Toolbar - Bottom Center - Fixed outside zoom transform */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-        <div className="bg-white/90 backdrop-blur-md rounded-full px-3 py-2 shadow-lg flex items-center gap-1 pointer-events-auto">
+        <div className="bg-white/90 backdrop-blur-md rounded-full px-2 py-2 shadow-lg flex items-center gap-1 pointer-events-auto">
           {/* Tool Selection */}
           <Button 
             size="sm" 
