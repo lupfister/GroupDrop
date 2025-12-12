@@ -3,7 +3,7 @@ import imgIPhone16ProWhiteTitaniumPortrait from "figma:asset/898d6b6326c8696cb62
 import { DraggablePhone, ProximityData } from "../components/DraggablePhone";
 import { PhoneWithProximity } from "../components/PhoneWithProximity";
 import { useState, useRef, useEffect } from "react";
-import { Plus, Minus, ZoomIn, ZoomOut, MousePointer2, Move } from "lucide-react";
+import { Plus, Minus, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { 
   RigidBody, 
@@ -130,8 +130,8 @@ function Bezel() {
 export default function Desktop() {
   const [phones, setPhones] = useState(1);
   const [, forceUpdate] = useState(0);
-  const [zoom, setZoom] = useState(0.5);
-  const [tool, setTool] = useState<Tool>('move');
+  const [zoom, setZoom] = useState(1);
+  const [tool, setTool] = useState<Tool>('interact');
   const [confirmedPhones, setConfirmedPhones] = useState<Set<number>>(new Set());
   const [groupSearchOpenPhones, setGroupSearchOpenPhones] = useState<Set<number>>(new Set());
   const [potentialGroups, setPotentialGroups] = useState<Map<string, PotentialGroup>>(new Map());
@@ -1810,26 +1810,7 @@ export default function Desktop() {
 
       {/* Toolbar - Bottom Center - Fixed outside zoom transform */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-        <div className="bg-white/90 backdrop-blur-md rounded-full px-2 py-2 shadow-lg flex items-center gap-1 pointer-events-auto">
-          {/* Tool Selection */}
-          <Button 
-            size="sm" 
-            variant={tool === 'move' ? 'default' : 'ghost'}
-            onClick={() => setTool('move')}
-            className="h-9 w-9 p-0 rounded-full"
-          >
-            <Move className="h-4 w-4" />
-          </Button>
-          <Button 
-            size="sm" 
-            variant={tool === 'interact' ? 'default' : 'ghost'}
-            onClick={() => setTool('interact')}
-            className="h-9 w-9 p-0 rounded-full"
-          >
-            <MousePointer2 className="h-4 w-4" />
-          </Button>
-          
-          <div className="w-px h-6 bg-gray-300 mx-1" />
+        <div className="bg-white/90 backdrop-blur-md rounded-full px-3 py-2 shadow-lg flex items-center gap-1 pointer-events-auto">
           
           {/* Phone Count */}
           <Button 
