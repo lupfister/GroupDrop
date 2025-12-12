@@ -236,6 +236,8 @@ function Screen({
   const representativeDropdownRef = useRef<HTMLDivElement>(null);
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
+  const enterDuration = '0.3s'; // Faster for entering
+  const exitDuration = '0.4s'; // Slower for exiting to make it smoother
   
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -256,6 +258,17 @@ function Screen({
   const [swipeRemoveOffset, setSwipeRemoveOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const swipeRemoveStartRef = useRef<{ x: number; y: number; targetUserId: number } | null>(null);
   const currentSwipeRemoveDistanceRef = useRef(0);
+  
+  // Track previous proximity phoneIds to detect enter/exit animations
+  const previousProximityPhoneIdsRef = useRef<Set<number>>(new Set());
+  const [exitingPhoneIds, setExitingPhoneIds] = useState<Set<number>>(new Set());
+  const [enteringPhoneIds, setEnteringPhoneIds] = useState<Set<number>>(new Set());
+  // Store last known proximity data for exiting users so we can animate them out
+  const lastProximityDataRef = useRef<Map<number, ProximityData>>(new Map());
+  // Track which exiting users should actually animate (after initial render at scale 1)
+  const [exitingAnimatingIds, setExitingAnimatingIds] = useState<Set<number>>(new Set());
+  // Track which entering users should animate from 0 to 1 (after initial render at scale 0)
+  const [enteringAnimatingIds, setEnteringAnimatingIds] = useState<Set<number>>(new Set());
 
   const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', groupId?: string | null) => {
     setViewState(nextState);
@@ -285,6 +298,108 @@ function Screen({
       onStateChange(viewState, swipeOffset);
     }
   }, [swipeOffset, viewState, onStateChange]);
+  
+  // Track entering/exiting users for animation
+  useEffect(() => {
+    const currentPhoneIds = new Set(
+      proximityData
+        .filter(data => isWithinProximityRange(data))
+        .map(data => data.phoneId)
+    );
+    
+    const previousPhoneIds = previousProximityPhoneIdsRef.current;
+    
+    // Store current proximity data for all users (so we can use it for exiting users)
+    proximityData
+      .filter(data => isWithinProximityRange(data))
+      .forEach(data => {
+        lastProximityDataRef.current.set(data.phoneId, data);
+      });
+    
+    // Find entering users (in current, not in previous)
+    const entering = new Set<number>();
+    currentPhoneIds.forEach(phoneId => {
+      if (!previousPhoneIds.has(phoneId)) {
+        entering.add(phoneId);
+      }
+    });
+    
+    // Find exiting users (were in previous, not in current)
+    const exiting = new Set<number>();
+    previousPhoneIds.forEach(phoneId => {
+      if (!currentPhoneIds.has(phoneId)) {
+        exiting.add(phoneId);
+      }
+    });
+    
+    // Update entering state - trigger animation immediately (no delay)
+    if (entering.size > 0) {
+      // Add to entering state immediately
+      setEnteringPhoneIds(prev => {
+        const updated = new Set(prev);
+        entering.forEach(id => updated.add(id));
+        return updated;
+      });
+      // Start animation after element is rendered at scale 0 (use double RAF for immediate start)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setEnteringAnimatingIds(prev => {
+            const updated = new Set(prev);
+            entering.forEach(id => updated.add(id));
+            return updated;
+          });
+        });
+      });
+      // Clear entering state after animation completes (scale from 0 to 1)
+      setTimeout(() => {
+        setEnteringPhoneIds(prev => {
+          const updated = new Set(prev);
+          entering.forEach(id => updated.delete(id));
+          return updated;
+        });
+        setEnteringAnimatingIds(prev => {
+          const updated = new Set(prev);
+          entering.forEach(id => updated.delete(id));
+          return updated;
+        });
+      }, 300); // Match enterDuration (300ms)
+    }
+    
+    // Update exiting state
+    if (exiting.size > 0) {
+      setExitingPhoneIds(exiting);
+      // Start exit animation after a brief delay to ensure element is rendered at scale 1 first
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setExitingAnimatingIds(prev => {
+            const updated = new Set(prev);
+            exiting.forEach(id => updated.add(id));
+            return updated;
+          });
+        });
+      });
+      // Clear exiting state and remove last proximity data after animation completes
+      setTimeout(() => {
+        setExitingPhoneIds(prev => {
+          const updated = new Set(prev);
+          exiting.forEach(id => {
+            updated.delete(id);
+            lastProximityDataRef.current.delete(id);
+          });
+          return updated;
+        });
+        setExitingAnimatingIds(prev => {
+          const updated = new Set(prev);
+          exiting.forEach(id => updated.delete(id));
+          return updated;
+        });
+      }, 400); // Match exitDuration (400ms)
+    }
+    
+    // Update previous ref
+    previousProximityPhoneIdsRef.current = currentPhoneIds;
+  }, [proximityData]);
+  
   
   // Check if any phones are within proximity range (direct or indirect)
   // Suppress notifications if this user was recently removed
@@ -1607,6 +1722,14 @@ function Screen({
             // so we should show all users in proximity, not just those already in the group
             // Removed users are filtered out here to ensure they don't appear on any device
 
+            // Add exiting users with their last known proximity data so they can animate out
+            exitingPhoneIds.forEach(phoneId => {
+              const lastData = lastProximityDataRef.current.get(phoneId);
+              if (lastData && !recentlyRemovedPhones?.has(phoneId)) {
+                nearbyWithinRange.push(lastData);
+              }
+            });
+
             if (nearbyWithinRange.length === 0) return null;
 
             // Shared constants for layout and sizing
@@ -1758,7 +1881,32 @@ function Screen({
               // Only allow swiping unconfirmed users in groupSearch view
               const isSwipeable = isGroupSearch && !isConfirmed && tool === 'interact';
 
-              const scale = isBeingSwiped ? Math.max(0.5, 1 - currentSwipeRemoveDistanceRef.current / 200) : 1;
+              // Check if user is entering or exiting
+              // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
+              // This check happens immediately on render, no state delay
+              const isNewlyAppearing = !previousProximityPhoneIdsRef.current.has(entry.phoneId);
+              const isEntering = isNewlyAppearing || enteringPhoneIds.has(entry.phoneId);
+              const isExiting = exitingPhoneIds.has(entry.phoneId);
+              
+              // Calculate scale: entering starts at 0 (animates to 1 immediately), exiting starts at 1 (animates to 0), otherwise 1
+              let scale = 1;
+              if (isExiting) {
+                // Only animate to 0 if we've triggered the animation (after initial render at scale 1)
+                const isAnimatingExit = exitingAnimatingIds.has(entry.phoneId);
+                scale = isAnimatingExit ? 0 : 1;
+              } else if (isEntering) {
+                // Start at 0, then animate to 1 when enteringAnimatingIds is set
+                const isAnimatingEnter = enteringAnimatingIds.has(entry.phoneId);
+                scale = isAnimatingEnter ? 1 : 0;
+              }
+              
+              // Override with swipe scale if being swiped
+              const swipeScale = isBeingSwiped ? Math.max(0.5, 1 - currentSwipeRemoveDistanceRef.current / 200) : 1;
+              scale = isBeingSwiped ? swipeScale : scale;
+              
+              // Determine transition duration based on animation type
+              const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
+              
               const transformValue = `translate(-50%, -50%) translate(${x + swipeOffsetForUser.x}px, ${y + swipeOffsetForUser.y}px) scale(${scale})`;
 
               return (
@@ -1773,7 +1921,7 @@ function Screen({
                     height: `${size}px`,
                     borderRadius: isHome ? '50%' : `${size / 2}px`,
                     willChange: 'transform, width, height, opacity',
-                    transition: isBeingSwiped ? 'none' : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
+                    transition: isBeingSwiped ? 'none' : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${transitionDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
                     overflow: 'hidden',
                     backgroundColor: 'white',
                     opacity,
@@ -2244,7 +2392,16 @@ function Screen({
 
             {/* Nearby phone profiles */}
             {(() => {
-              const nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              let nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              
+              // Add exiting users with their last known proximity data so they can animate out
+              exitingPhoneIds.forEach(phoneId => {
+                const lastData = lastProximityDataRef.current.get(phoneId);
+                if (lastData) {
+                  nearbyWithinRange.push(lastData);
+                }
+              });
+              
               if (nearbyWithinRange.length === 0) return null;
 
               const notificationMaxDisplayRadius = 100;
@@ -2342,6 +2499,28 @@ function Screen({
                 const x = notifXs[index];
                 const y = notifYs[index];
                 const size = notificationSize;
+                
+                // Check if user is entering or exiting
+                // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
+                // This check happens immediately on render, no state delay
+                const isNewlyAppearing = !previousProximityPhoneIdsRef.current.has(entry.phoneId);
+                const isEntering = isNewlyAppearing || enteringPhoneIds.has(entry.phoneId);
+                const isExiting = exitingPhoneIds.has(entry.phoneId);
+                
+                // Calculate scale: entering starts at 0 (animates to 1 immediately), exiting starts at 1 (animates to 0), otherwise 1
+                let scale = 1;
+                if (isExiting) {
+                  // Only animate to 0 if we've triggered the animation (after initial render at scale 1)
+                  const isAnimatingExit = exitingAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingExit ? 0 : 1;
+                } else if (isEntering) {
+                  // Start at 0, then animate to 1 when enteringAnimatingIds is set
+                  const isAnimatingEnter = enteringAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingEnter ? 1 : 0;
+                }
+                
+                // Determine transition duration based on animation type
+                const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
 
                 return (
                   <div
@@ -2350,12 +2529,13 @@ function Screen({
                       position: 'absolute',
                       left: '50%',
                       top: '60%',
-                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`,
                       width: `${size}px`,
                       height: `${size}px`,
                       borderRadius: '50%',
                       overflow: 'hidden',
                       backgroundColor: 'white',
+                      transition: `transform ${transitionDuration} ${springCurve}, width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}`,
                     }}
                   >
                     <img
@@ -2442,7 +2622,16 @@ function Screen({
 
             {/* Nearby phone profiles */}
             {(() => {
-              const nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              let nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              
+              // Add exiting users with their last known proximity data so they can animate out
+              exitingPhoneIds.forEach(phoneId => {
+                const lastData = lastProximityDataRef.current.get(phoneId);
+                if (lastData) {
+                  nearbyWithinRange.push(lastData);
+                }
+              });
+              
               if (nearbyWithinRange.length === 0) return null;
 
               const notificationMaxDisplayRadius = 100;
@@ -2540,6 +2729,28 @@ function Screen({
                 const x = notifXs[index];
                 const y = notifYs[index];
                 const size = notificationSize;
+                
+                // Check if user is entering or exiting
+                // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
+                // This check happens immediately on render, no state delay
+                const isNewlyAppearing = !previousProximityPhoneIdsRef.current.has(entry.phoneId);
+                const isEntering = isNewlyAppearing || enteringPhoneIds.has(entry.phoneId);
+                const isExiting = exitingPhoneIds.has(entry.phoneId);
+                
+                // Calculate scale: entering starts at 0 (animates to 1 immediately), exiting starts at 1 (animates to 0), otherwise 1
+                let scale = 1;
+                if (isExiting) {
+                  // Only animate to 0 if we've triggered the animation (after initial render at scale 1)
+                  const isAnimatingExit = exitingAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingExit ? 0 : 1;
+                } else if (isEntering) {
+                  // Start at 0, then animate to 1 when enteringAnimatingIds is set
+                  const isAnimatingEnter = enteringAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingEnter ? 1 : 0;
+                }
+                
+                // Determine transition duration based on animation type
+                const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
 
                 return (
                   <div
@@ -2548,12 +2759,13 @@ function Screen({
                       position: 'absolute',
                       left: '50%',
                       top: '60%',
-                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`,
                       width: `${size}px`,
                       height: `${size}px`,
                       borderRadius: '50%',
                       overflow: 'hidden',
                       backgroundColor: 'white',
+                      transition: `transform ${transitionDuration} ${springCurve}, width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}`,
                     }}
                   >
                     <img
