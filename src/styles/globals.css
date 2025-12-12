@@ -265,3 +265,29 @@ html {
   animation-duration: 0.5s;
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
+
+/* View Transitions for Debug Menu Button to Expanded Menu */
+/* The button and menu share the same view-transition-name so they morph into each other */
+
+.debug-menu-transition {
+  view-transition-name: debug-menu;
+  contain: layout;
+}
+
+/* Configure the view transition group - this controls the morphing container */
+::view-transition-group(debug-menu) {
+  animation-duration: 0.4s;
+  animation-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Configure the old element (what's leaving) */
+::view-transition-old(debug-menu) {
+  animation-duration: 0.4s;
+  animation-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Configure the new element (what's entering) */
+::view-transition-new(debug-menu) {
+  animation-duration: 0.4s;
+  animation-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}

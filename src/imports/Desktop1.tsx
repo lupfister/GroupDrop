@@ -1649,168 +1649,177 @@ export default function Desktop() {
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'fixed', top: 0, left: 0 }}>
       {/* Debug Menu - Top Left - Fixed outside zoom transform */}
-      {showDebugMenu && (
-        <div className="absolute z-50 pointer-events-none" style={{ left: '12px', top: '12px' }}>
-          <div 
-            className="bg-white shadow-lg max-w-md max-h-[80vh] overflow-auto pointer-events-auto" 
-            style={{ 
-              maxWidth: '400px',
-              borderRadius: '16px',
-              padding: '12px',
-              backgroundColor: '#ffffff'
-            }}
-          >
-            <div className="flex items-center justify-between" style={{ marginBottom: '16px' }}>
-              <h3 style={{ fontSize: '24px', fontWeight: 700, color: '#000000' }}>Groups</h3>
-              <button
-                onClick={() => setShowDebugMenu(false)}
-                className="text-gray-400 hover:text-gray-600 text-xl leading-none"
-                aria-label="Close debug menu"
-                tabIndex={0}
-                style={{ 
-                  fontSize: '18px',
-                  lineHeight: 1,
-                  color: '#9ca3af',
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: 0
-                }}
-              >
-                ×
-              </button>
-            </div>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* Potential Groups */}
-              <div>
-                <h4 style={{ 
-                  fontSize: '16px', 
-                  fontWeight: 700, 
-                  color: '#000000',
-                  marginBottom: '8px'
-                }}>
-                  Potential Groups
-                </h4>
-                {potentialGroups.size === 0 ? (
-                  <p className="text-sm text-gray-400">No potential groups</p>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {Array.from(potentialGroups.entries()).map(([groupId, group]) => (
-                      <div 
-                        key={groupId} 
-                        style={{
-                          backgroundColor: '#f5f5f5',
-                          borderRadius: '8px',
-                          padding: '12px'
-                        }}
-                      >
-                        <div style={{
-                          fontSize: '14px',
-                          fontWeight: 700,
-                          color: '#000000',
-                          marginBottom: '8px'
-                        }}>
-                          Group{groupId}
-                          {group.representativePhoneId && (
-                            <span style={{ 
-                              fontSize: '12px', 
-                              fontWeight: 400, 
-                              color: '#0066cc',
-                              marginLeft: '8px'
-                            }}>
-                              [REP: Phone{group.representativePhoneId} → Group {group.representativeGroupId}]
-                            </span>
-                          )}
+      {showDebugMenu && (() => {
+        // Helper function to get phone name from phoneId
+        const getPhoneName = (phoneId: number): string => {
+          const phone = bodiesRef.current.find(b => b.id === phoneId);
+          return phone?.name || `Phone ${phoneId}`;
+        };
+
+        return (
+          <div className="absolute z-50 pointer-events-none" style={{ left: '12px', top: '12px' }}>
+            <div 
+              className="bg-white shadow-lg max-w-md max-h-[80vh] overflow-auto pointer-events-auto" 
+              style={{ 
+                maxWidth: '400px',
+                borderRadius: '16px',
+                padding: '12px',
+                backgroundColor: '#ffffff'
+              }}
+            >
+              <div className="flex items-center justify-between" style={{ marginBottom: '16px' }}>
+                <h3 style={{ fontSize: '24px', fontWeight: 700, color: '#000000' }}>Groups</h3>
+                <button
+                  onClick={() => setShowDebugMenu(false)}
+                  className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+                  aria-label="Close debug menu"
+                  tabIndex={0}
+                  style={{ 
+                    fontSize: '24px',
+                    lineHeight: 1,
+                    color: '#9ca3af',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '8px',
+                    marginRight: '6px'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {/* Potential Groups */}
+                <div>
+                  <h4 style={{ 
+                    fontSize: '16px', 
+                    fontWeight: 700, 
+                    color: '#000000',
+                    marginBottom: '8px'
+                  }}>
+                    Potential Groups
+                  </h4>
+                  {potentialGroups.size === 0 ? (
+                    <p className="text-sm text-gray-400">No potential groups</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {Array.from(potentialGroups.entries()).map(([groupId, group]) => (
+                        <div 
+                          key={groupId} 
+                          style={{
+                            backgroundColor: '#f5f5f5',
+                            borderRadius: '8px',
+                            padding: '12px'
+                          }}
+                        >
+                          <div style={{
+                            fontSize: '14px',
+                            fontWeight: 700,
+                            color: '#000000',
+                            marginBottom: '8px'
+                          }}>
+                            Group{groupId}
+                            {group.representativePhoneId && (
+                              <span style={{ 
+                                fontSize: '12px', 
+                                fontWeight: 400, 
+                                color: '#0066cc',
+                                marginLeft: '8px'
+                              }}>
+                                [REP: {getPhoneName(group.representativePhoneId)} → Group {group.representativeGroupId}]
+                              </span>
+                            )}
+                          </div>
+                          <div style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: '12px 12px',
+                            rowGap: '4px'
+                          }}>
+                            {Array.from(group.memberIds).map((phoneId) => {
+                              const isConfirmed = group.confirmedIds.has(phoneId);
+                              const isRepresentative = phoneId === group.representativePhoneId;
+                              return (
+                                <span 
+                                  key={phoneId} 
+                                  style={{ 
+                                    fontSize: '13px',
+                                    fontWeight: isRepresentative ? 700 : 400,
+                                    color: isRepresentative ? '#0066cc' : isConfirmed ? '#737373' : '#999999'
+                                  }}
+                                >
+                                  {getPhoneName(phoneId)} {isConfirmed ? '✓' : '○'} {isRepresentative ? '👑' : ''}
+                                </span>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <div style={{
-                          display: 'flex',
-                          flexWrap: 'wrap',
-                          gap: '12px 12px',
-                          rowGap: '4px'
-                        }}>
-                          {Array.from(group.memberIds).map((phoneId) => {
-                            const isConfirmed = group.confirmedIds.has(phoneId);
-                            const isRepresentative = phoneId === group.representativePhoneId;
-                            return (
+                      ))}
+                    </div>
+                  )}
+                </div>
+                
+                {/* Confirmed Groups */}
+                <div>
+                  <h4 style={{ 
+                    fontSize: '16px', 
+                    fontWeight: 700, 
+                    color: '#000000',
+                    marginBottom: '8px'
+                  }}>
+                    Confirmed Groups
+                  </h4>
+                  {confirmedGroups.size === 0 ? (
+                    <p className="text-sm text-gray-400">No confirmed groups</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {Array.from(confirmedGroups.entries()).map(([groupId, group]) => (
+                        <div 
+                          key={groupId} 
+                          style={{
+                            backgroundColor: '#f5f5f5',
+                            borderRadius: '8px',
+                            padding: '12px'
+                          }}
+                        >
+                          <div style={{ 
+                            fontSize: '14px', 
+                            fontWeight: 700, 
+                            color: '#000000',
+                            marginBottom: '8px'
+                          }}>
+                            Group {groupId}
+                          </div>
+                          <div style={{ 
+                            display: 'flex', 
+                            flexWrap: 'wrap', 
+                            gap: '12px 12px',
+                            rowGap: '4px'
+                          }}>
+                            {Array.from(group.memberIds).map((phoneId) => (
                               <span 
                                 key={phoneId} 
                                 style={{ 
                                   fontSize: '13px',
-                                  fontWeight: isRepresentative ? 700 : 400,
-                                  color: isRepresentative ? '#0066cc' : isConfirmed ? '#737373' : '#999999'
+                                  fontWeight: 400,
+                                  color: '#737373'
                                 }}
                               >
-                                Phone{phoneId} {isConfirmed ? '✓' : '○'} {isRepresentative ? '👑' : ''}
+                                {getPhoneName(phoneId)} ✓
                               </span>
-                            );
-                          })}
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              
-              {/* Confirmed Groups */}
-              <div>
-                <h4 style={{ 
-                  fontSize: '16px', 
-                  fontWeight: 700, 
-                  color: '#000000',
-                  marginBottom: '8px'
-                }}>
-                  Confirmed Groups
-                </h4>
-                {confirmedGroups.size === 0 ? (
-                  <p className="text-sm text-gray-400">No confirmed groups</p>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {Array.from(confirmedGroups.entries()).map(([groupId, group]) => (
-                      <div 
-                        key={groupId} 
-                        style={{
-                          backgroundColor: '#f5f5f5',
-                          borderRadius: '8px',
-                          padding: '12px'
-                        }}
-                      >
-                        <div style={{ 
-                          fontSize: '14px', 
-                          fontWeight: 700, 
-                          color: '#000000',
-                          marginBottom: '8px'
-                        }}>
-                          Group {groupId}
-                        </div>
-                        <div style={{ 
-                          display: 'flex', 
-                          flexWrap: 'wrap', 
-                          gap: '12px 12px',
-                          rowGap: '4px'
-                        }}>
-                          {Array.from(group.memberIds).map((phoneId) => (
-                            <span 
-                              key={phoneId} 
-                              style={{ 
-                                fontSize: '13px',
-                                fontWeight: 400,
-                                color: '#737373'
-                              }}
-                            >
-                              Phone{phoneId} ✓
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       
       {/* Debug Menu Toggle Button - Fixed outside zoom transform */}
       {!showDebugMenu && (
