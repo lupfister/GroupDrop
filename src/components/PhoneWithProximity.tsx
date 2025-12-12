@@ -34,6 +34,8 @@ interface PhoneWithProximityProps {
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
   confirmedGroups?: Map<string, ConfirmedGroup>; // Confirmed groups to get all members when group is confirmed
   potentialGroups?: Map<string, PotentialGroup>; // Potential groups to get unconfirmed members
+  isRecentlyRemoved?: boolean; // Flag to suppress notifications for recently removed users
+  recentlyRemovedPhones?: Set<number>; // Set of recently removed phone IDs to filter out from display
 }
 
 function Container() {
@@ -166,6 +168,8 @@ function Screen({
   onGroupSearchStateChange,
   confirmedGroups,
   potentialGroups,
+  isRecentlyRemoved,
+  recentlyRemovedPhones,
 }: {
   body: RigidBody;
   proximityData: ProximityData[];
@@ -178,6 +182,8 @@ function Screen({
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
   confirmedGroups?: Map<string, ConfirmedGroup>;
   potentialGroups?: Map<string, PotentialGroup>;
+  isRecentlyRemoved?: boolean;
+  recentlyRemovedPhones?: Set<number>;
 }) {
   // homeScreen  -> zero state
   // groupSearch -> opened notification / scanning state
@@ -479,6 +485,11 @@ function Screen({
       ? [body, ...confirmedNearbyPhones] 
       : confirmedNearbyPhones;
   
+  // Filter out recently removed phones from confirmed phones list
+  const allConfirmedPhonesFiltered = allConfirmedPhones.filter(
+    phone => !recentlyRemovedPhones?.has(phone.id)
+  );
+  
   // Show unified view if there are nearby phones OR if we're in groupConfirm/groupSearch state with a potential/confirmed group
   // Always keep notification mounted in homeScreen so it can shrink to pill form
   const [notificationMounted, setNotificationMounted] = useState(true);
@@ -504,11 +515,16 @@ function Screen({
     }
   }, [showNotification, viewState]);
 
-  const shouldShowUnifiedView =
+  // But hide it completely if user was recently removed (they should be in zero state with no notification)
+  // Explicitly check that isRecentlyRemoved is not true to ensure the notification overlay is completely removed
+  const shouldShowUnifiedView = (isRecentlyRemoved !== true) && (
     (viewState === 'homeScreen' ? notificationMounted : hasNearbyPhones) ||
-    (viewState === 'groupConfirm' && (phoneConfirmedGroup || phonePotentialGroup)) ||
-    (viewState === 'groupSearch' && phonePotentialGroup);
-  const extraConfirmedPhones = allConfirmedPhones.filter(phone => phone.id !== body.id);
+    phonePotentialGroup ||
+    phoneConfirmedGroup ||
+    (viewState === 'groupConfirm' && (phonePotentialGroup || phoneConfirmedGroup)) ||
+    (viewState === 'groupSearch' && phonePotentialGroup)
+  );
+  const extraConfirmedPhones = allConfirmedPhonesFiltered.filter(phone => phone.id !== body.id);
   const unconfirmedPlaced: { x: number; y: number; r: number }[] = [];
   const notificationHeight = '140px';
   const isHomeNotification = viewState === 'homeScreen';
@@ -548,6 +564,65 @@ function Screen({
   const notificationTop = viewState === 'homeScreen'
     ? '12px' // Start at top
     : '12px';
+
+  // Track icons for exit animations - keep exiting icons visible until animation completes
+  const [exitingIconIds, setExitingIconIds] = useState<Set<number>>(new Set());
+  const prevNearbyIdsRef = useRef<Set<number>>(new Set());
+  const lastKnownPositionsRef = useRef<Map<number, { x: number; y: number; size: number; angleDeg: number }>>(new Map());
+  const prevPositionsRef = useRef<Map<number, { x: number; y: number; size: number }>>(new Map());
+
+  useEffect(() => {
+    if (viewState === 'groupConfirm') {
+      // Reset in groupConfirm
+      setExitingIconIds(new Set());
+      prevNearbyIdsRef.current = new Set();
+      lastKnownPositionsRef.current = new Map();
+      return;
+    }
+
+    const currentIds = new Set(nearbyWithinRange.map(data => data.phoneId));
+    const prevIds = prevNearbyIdsRef.current;
+
+    // Find icons that left range (before we update anything)
+    const newlyExiting = new Set<number>();
+    prevIds.forEach(id => {
+      if (!currentIds.has(id)) {
+        newlyExiting.add(id);
+      }
+    });
+
+    // Update exiting set
+    if (newlyExiting.size > 0) {
+      setExitingIconIds(prev => {
+        const updated = new Set(prev);
+        newlyExiting.forEach(id => updated.add(id));
+        return updated;
+      });
+
+      // Remove after animation completes
+      const timeout = setTimeout(() => {
+        setExitingIconIds(prev => {
+          const updated = new Set(prev);
+          newlyExiting.forEach(id => {
+            updated.delete(id);
+            lastKnownPositionsRef.current.delete(id);
+          });
+          return updated;
+        });
+      }, 450); // matches springDuration
+
+      return () => clearTimeout(timeout);
+    }
+
+    // Remove icons that are no longer exiting (came back into range)
+    setExitingIconIds(prev => {
+      const updated = new Set(prev);
+      currentIds.forEach(id => updated.delete(id));
+      return updated;
+    });
+
+    prevNearbyIdsRef.current = currentIds;
+  }, [nearbyWithinRange, viewState, allBodies]);
 
   // Control visibility and exit animation of "Waiting for Others..." pill
   const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
@@ -628,6 +703,7 @@ function Screen({
             borderRadius: viewState === 'homeScreen' 
               ? `${notificationBorderRadiusAnimated}px` 
               : proximityBorderRadius,
+            border: viewState === 'homeScreen' ? '1px solid #333333' : 'none',
             cursor: viewState === 'homeScreen' ? 'pointer' : 'default',
             pointerEvents: viewState === 'groupConfirm' ? 'none' : 'auto',
             boxShadow: viewState === 'homeScreen' ? '0px 4px 12px rgba(0, 0, 0, 0.3)' : 'none',
@@ -638,7 +714,7 @@ function Screen({
                   ? 1
                   : 2,
             overflow: 'hidden',
-            willChange: 'width, height, border-radius, top, left',
+            willChange: 'width, height, border-radius, top, left, border',
             transition:
               isSwiping || isTransitioning
                 ? 'none'
@@ -650,7 +726,8 @@ function Screen({
                    background-color ${springDuration} ${springCurve},
                    border-radius ${springDuration} ${springCurve},
                    backdrop-filter ${springDuration} ${springCurve},
-                   box-shadow ${springDuration} ${springCurve}`,
+                   box-shadow ${springDuration} ${springCurve},
+                   border ${springDuration} ${springCurve}`,
           }}
         >
           {/* Shared cluster circle/profile - morphs across homeScreen, groupSearch, groupConfirm */}
@@ -795,9 +872,25 @@ function Screen({
               only in the bottom cluster UI.
               Also hidden when notification is in pill form. */}
           {viewState !== 'groupConfirm' && notificationVisible && (() => {
-            const nearbyWithinRange = proximityData.filter(data => data.distanceCm <= 8.5);
+            // Filter out recently removed users immediately to ensure they don't appear on any device
+            let nearbyWithinRange = proximityData
+              .filter(data => data.distanceCm <= 8.5)
+              .filter(data => !recentlyRemovedPhones?.has(data.phoneId));
+            
+            // In groupSearch view, show all nearby users who are in proximity
+            // The group membership filter was too restrictive - it prevented new users
+            // (like a third phone) from appearing even when they're in proximity
+            // The updatePotentialGroups function will add all nearby users to the group,
+            // so we should show all users in proximity, not just those already in the group
+            // Removed users are filtered out here to ensure they don't appear on any device
+            
+            // Include exiting icons in the render list for animation
+            const allIconIds = new Set([
+              ...nearbyWithinRange.map(data => data.phoneId),
+              ...Array.from(exitingIconIds)
+            ]);
 
-            if (nearbyWithinRange.length === 0) return null;
+            if (allIconIds.size === 0) return null;
 
             // Shared constants for layout and sizing
             // Notification view: exaggerate distances slightly so positions feel more "spread out"
@@ -821,10 +914,33 @@ function Screen({
               profileImage: string;
             };
 
-            const layoutEntries: LayoutEntry[] = nearbyWithinRange.map(data => {
+            // Create layout entries for all icons (current + exiting)
+            const layoutEntries: LayoutEntry[] = Array.from(allIconIds).map(phoneId => {
+              const proximityData = nearbyWithinRange.find(data => data.phoneId === phoneId);
+              const isExiting = exitingIconIds.has(phoneId);
+              
+              // For exiting icons, use last known position
+              if (!proximityData && isExiting) {
+                const lastPos = lastKnownPositionsRef.current.get(phoneId);
+                const nearbyPhone = allBodies.find(b => b.id === phoneId);
+                const profileImage = nearbyPhone?.profileImage || imgContainer1;
+                
+                // Use last known angle or default
+                const angleDeg = lastPos?.angleDeg ?? 0;
+                
+                return {
+                  phoneId,
+                  angleDeg,
+                  notificationRadius: notificationMinDisplayRadius + (notificationMaxDisplayRadius - notificationMinDisplayRadius) * 0.5,
+                  fullViewRadius: fullViewMinDisplayRadius + (fullViewMaxDisplayRadius - fullViewMinDisplayRadius) * 0.5,
+                  fullViewSize: fullViewMinSize + (fullViewMaxSize - fullViewMinSize) * 0.5,
+                  profileImage,
+                };
+              }
+
               // Slightly non-linear scaling in notification view to push farther phones further out
               const notificationNormalized = Math.min(
-                Math.max(data.distanceCm / notificationMaxRangeCm, 0),
+                Math.max(proximityData.distanceCm / notificationMaxRangeCm, 0),
                 1,
               );
               const notificationRadius =
@@ -834,20 +950,20 @@ function Screen({
 
               const fullViewRadius =
                 fullViewMinDisplayRadius +
-                (data.distanceCm / fullViewMaxRangeCm) *
+                (proximityData.distanceCm / fullViewMaxRangeCm) *
                   (fullViewMaxDisplayRadius - fullViewMinDisplayRadius);
 
               const fullViewSize =
                 fullViewMaxSize -
-                (data.distanceCm / fullViewMaxRangeCm) *
+                (proximityData.distanceCm / fullViewMaxRangeCm) *
                   (fullViewMaxSize - fullViewMinSize);
 
-              const nearbyPhone = allBodies.find(b => b.id === data.phoneId);
+              const nearbyPhone = allBodies.find(b => b.id === phoneId);
               const profileImage = nearbyPhone?.profileImage || imgContainer1;
 
               return {
-                phoneId: data.phoneId,
-                angleDeg: data.degrees,
+                phoneId,
+                angleDeg: proximityData.degrees,
                 notificationRadius,
                 fullViewRadius,
                 fullViewSize,
@@ -929,14 +1045,65 @@ function Screen({
 
             resolveOverlaps2D(fullXs, fullYs, fullSizes, 6);
 
+            // Store calculated positions for ALL icons (including ones about to exit)
+            // Also store in prevPositions for exiting icons to use
+            layoutEntries.forEach((entry, index) => {
+              const isHome = viewState === 'homeScreen';
+              const x = isHome ? notifXs[index] : fullXs[index];
+              const y = isHome ? notifYs[index] : fullYs[index];
+              const size = isHome ? notificationSize : fullSizes[index];
+              
+              // Store current position
+              lastKnownPositionsRef.current.set(entry.phoneId, {
+                x,
+                y,
+                size,
+                angleDeg: entry.angleDeg,
+              });
+              
+              // Also store in prevPositions (will be used for exiting icons)
+              prevPositionsRef.current.set(entry.phoneId, { x, y, size });
+            });
+
             const topOffset =
               viewState === 'homeScreen' ? '60%' : 'calc(50% - 18px)';
 
             return layoutEntries.map((entry, index) => {
               const isHome = viewState === 'homeScreen';
-              const x = isHome ? notifXs[index] : fullXs[index];
-              const y = isHome ? notifYs[index] : fullYs[index];
-              const size = isHome ? notificationSize : fullSizes[index];
+              const isExiting = exitingIconIds.has(entry.phoneId);
+              
+              // For exiting icons, use stored position from previous render; otherwise use calculated
+              let x, y, baseSize;
+              if (isExiting) {
+                // Use previous position for exiting icons (from before they were marked as exiting)
+                const prevPos = prevPositionsRef.current.get(entry.phoneId);
+                const stored = lastKnownPositionsRef.current.get(entry.phoneId);
+                
+                // Prefer prevPos (from before exit), fallback to stored, then calculated
+                if (prevPos) {
+                  x = prevPos.x;
+                  y = prevPos.y;
+                  baseSize = prevPos.size;
+                } else if (stored) {
+                  x = stored.x;
+                  y = stored.y;
+                  baseSize = stored.size;
+                } else {
+                  // Fallback if no stored position
+                  x = isHome ? notifXs[index] : fullXs[index];
+                  y = isHome ? notifYs[index] : fullYs[index];
+                  baseSize = isHome ? notificationSize : fullSizes[index];
+                }
+              } else {
+                x = isHome ? notifXs[index] : fullXs[index];
+                y = isHome ? notifYs[index] : fullYs[index];
+                baseSize = isHome ? notificationSize : fullSizes[index];
+              }
+              
+              // For exiting icons: start from baseSize, animate to 0
+              // The transition will handle the animation from current size to 0
+              const animatedSize = isExiting ? 0 : baseSize;
+              const opacity = isExiting ? 0 : 1;
 
               return (
                 <div
@@ -946,11 +1113,14 @@ function Screen({
                     left: '50%',
                     top: topOffset,
                     transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
-                    width: `${size}px`,
-                    height: `${size}px`,
-                    borderRadius: isHome ? '50%' : `${size / 2}px`,
-                    willChange: 'transform, width, height',
-                    transition: `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}`,
+                    width: `${animatedSize}px`,
+                    height: `${animatedSize}px`,
+                    borderRadius: isHome ? '50%' : `${Math.max(animatedSize, 0.1) / 2}px`,
+                    opacity,
+                    willChange: 'transform, width, height, opacity',
+                    transition: isExiting 
+                      ? `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`
+                      : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
                     overflow: 'hidden',
                     backgroundColor: 'white',
                   }}
@@ -1279,6 +1449,8 @@ export function PhoneWithProximity({
   onGroupSearchStateChange,
   confirmedGroups,
   potentialGroups,
+  isRecentlyRemoved,
+  recentlyRemovedPhones,
 }: PhoneWithProximityProps) {
   return (
     <div className="relative size-full bg-black" data-name="PhoneWithProximity">
@@ -1294,6 +1466,8 @@ export function PhoneWithProximity({
         onGroupSearchStateChange={onGroupSearchStateChange}
         confirmedGroups={confirmedGroups}
         potentialGroups={potentialGroups}
+        isRecentlyRemoved={isRecentlyRemoved}
+        recentlyRemovedPhones={recentlyRemovedPhones}
       />
       <Bezel />
     </div>
