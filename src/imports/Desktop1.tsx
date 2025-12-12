@@ -23,6 +23,7 @@ interface PotentialGroup {
   confirmedIds: Set<number>; // Phone IDs that have confirmed
   representativePhoneId?: number; // Phone ID that is representing an existing group (for debugging)
   representativeGroupId?: string; // Group ID that this potential group represents (for debugging)
+  isNew?: boolean; // True if this is a new unique combination that hasn't been seen before
 }
 
 interface ConfirmedGroup {
@@ -150,6 +151,9 @@ export default function Desktop() {
   const nextConfirmedGroupIdRef = useRef(1);
   const potentialGroupsRef = useRef<Map<string, PotentialGroup>>(new Map());
   const confirmedGroupsRef = useRef<Map<string, ConfirmedGroup>>(new Map());
+  // Track which unique combinations of people have been seen before
+  // Key is a sorted comma-separated string of phone IDs (e.g., "1,2,3")
+  const seenGroupCombinationsRef = useRef<Set<string>>(new Set());
   
   // Keep refs in sync with state
   useEffect(() => {
@@ -721,8 +725,44 @@ export default function Desktop() {
       representativePhonesRef.current = next;
       return next;
     });
-    // Also set the representative group selection
-    handleRepresentativeGroupChange(phoneId, groupId);
+    // Update phoneRepresentativeGroups but don't call handleRepresentativeGroupChange to avoid circular call
+    setPhoneRepresentativeGroups(prev => {
+      const next = new Map(prev);
+      next.set(phoneId, groupId);
+      phoneRepresentativeGroupsRef.current = next;
+      
+      // Find all phones in the same clump (in proximity)
+      const phoneBody = bodiesRef.current.find(b => b.id === phoneId);
+      if (phoneBody) {
+        const phoneProximityData = calculateProximityData(phoneBody);
+        const nearbyPhoneIds = phoneProximityData
+          .filter(data => data.distanceCm <= 8.5)
+          .map(data => data.phoneId);
+        
+        // Sync to all phones in the same clump (in proximity)
+        nearbyPhoneIds.forEach(nearbyPhoneId => {
+          if (nearbyPhoneId !== phoneId) {
+            next.set(nearbyPhoneId, groupId);
+          }
+        });
+      }
+      
+      // Also sync to phones in the same potential group (if exists)
+      const phonePotentialGroup = potentialGroupsRef.current 
+        ? Array.from(potentialGroupsRef.current.values()).find(group => group.memberIds.has(phoneId))
+        : undefined;
+      
+      if (phonePotentialGroup) {
+        // Sync to all phones in the same potential group
+        phonePotentialGroup.memberIds.forEach(memberId => {
+          if (memberId !== phoneId) {
+            next.set(memberId, groupId);
+          }
+        });
+      }
+      
+      return next;
+    });
   };
 
   // Handle phone changing which group they're representing
@@ -767,7 +807,12 @@ export default function Desktop() {
     
     // If setting to an existing group, also mark as representative
     if (groupId !== null) {
-      handleSetRepresentative(phoneId, groupId);
+      setRepresentativePhones(prev => {
+        const next = new Map(prev);
+        next.set(phoneId, groupId);
+        representativePhonesRef.current = next;
+        return next;
+      });
     } else {
       // If setting to null (new group), remove from representatives
       setRepresentativePhones(prev => {
@@ -1014,15 +1059,20 @@ export default function Desktop() {
       return visitedForCheck.size === memberArray.length;
     };
     
-    // Helper function to check if exact members already exist in a confirmed group
+    // Helper function to check if the EXACT combination matches a confirmed group
+    // This allows sub-combinations (e.g., A,B from A,B,C) to form potential groups
+    // Only prevents if the exact same combination already exists as a confirmed group
     const areMembersInConfirmedGroup = (memberIds: Set<number>): boolean => {
+      // Check if this exact combination (same members, same size) exists in any confirmed group
       const memberArray = Array.from(memberIds).sort((a, b) => a - b);
-      const memberKey = memberArray.join(',');
+      const combinationKey = memberArray.join(',');
       
       for (const confirmedGroup of confirmedGroupsRef.current.values()) {
         const confirmedMembers = Array.from(confirmedGroup.memberIds).sort((a, b) => a - b);
         const confirmedKey = confirmedMembers.join(',');
-        if (confirmedKey === memberKey) {
+        
+        // Only return true if it's an EXACT match (same members, same size)
+        if (combinationKey === confirmedKey) {
           return true;
         }
       }
@@ -1044,7 +1094,8 @@ export default function Desktop() {
         );
         
         if (filteredComponent.size >= 2) {
-          // Skip creating potential group if these exact members are already in a confirmed group
+          // Skip creating potential group only if the EXACT combination matches a confirmed group
+          // Sub-combinations (e.g., A,B from A,B,C) are allowed to form potential groups
           if (areMembersInConfirmedGroup(filteredComponent)) {
             continue;
           }
@@ -1052,6 +1103,9 @@ export default function Desktop() {
           // Create a key for this clump (sorted member IDs) - needed for tracking
           const memberArray = Array.from(filteredComponent).sort((a, b) => a - b);
           const clumpKey = memberArray.join(',');
+          
+          // Check if this is a new unique combination that hasn't been seen before
+          const isNewCombination = !seenGroupCombinationsRef.current.has(clumpKey);
           
           // FIRST: Check if there's already ANY potential group for this clump (regular or representative)
           let existingGroupId: string | null = null;
@@ -1115,6 +1169,13 @@ export default function Desktop() {
                 id => representativeGroup.memberIds.has(id)
               );
               
+              // Skip creating potential group if all members are already in the confirmed group
+              // (this prevents recreating potential groups after they've been confirmed and merged)
+              const allMembersAlreadyInGroup = proximityMembers.every(id => representativeGroup.memberIds.has(id));
+              if (allMembersAlreadyInGroup) {
+                continue; // Skip - all members already confirmed in this group
+              }
+              
               // Only create potential group if there are new members OR if representative is in proximity
               if (newMembers.length > 0 || existingMembersInProximity.includes(representativePhoneId!)) {
                 const combinedMembers = new Set<number>(proximityMembers);
@@ -1136,12 +1197,18 @@ export default function Desktop() {
                   potentialGroupId = `potential-rep-${representativeGroupId}-${potentialGroupsRef.current.size + newGroupCounter}`;
                 }
                 
+                // Mark as new if this combination hasn't been seen before
+                if (isNewCombination) {
+                  seenGroupCombinationsRef.current.add(clumpKey);
+                }
+                
                 newGroups.set(potentialGroupId, {
                   id: potentialGroupId,
                   memberIds: combinedMembers,
                   confirmedIds: confirmedIds,
                   representativePhoneId: representativePhoneId!,
                   representativeGroupId: representativeGroupId!,
+                  isNew: isNewCombination,
                 });
                 
                 currentClumps.set(clumpKey, combinedMembers);
@@ -1179,6 +1246,12 @@ export default function Desktop() {
               .forEach(id => cleanConfirmedIds.add(id));
           }
           
+          // Mark as new if this combination hasn't been seen before
+          // Only mark as new if it's a truly new group (not updating an existing one)
+          if (isNewCombination && !existingGroupId) {
+            seenGroupCombinationsRef.current.add(clumpKey);
+          }
+          
           // Create ONE potential group for this clump (regular)
           // Remove representative fields if converting from representative to regular
           newGroups.set(groupId, {
@@ -1188,6 +1261,7 @@ export default function Desktop() {
             // Explicitly remove representative fields for regular groups
             representativePhoneId: undefined,
             representativeGroupId: undefined,
+            isNew: isNewCombination && !existingGroupId, // Only new if it's a new group, not an update
           });
         }
       }
@@ -1242,17 +1316,45 @@ export default function Desktop() {
           const newConfirmedIds = new Set(
             Array.from(group.confirmedIds).filter(id => !recentlyRemovedPhonesRef.current.has(id))
           );
+          
+          // Check if the new combination (after removing phones) is a new unique combination
+          const newMemberArray = Array.from(newMemberIds).sort((a, b) => a - b);
+          const newCombinationKey = newMemberArray.join(',');
+          const isNewCombination = !seenGroupCombinationsRef.current.has(newCombinationKey);
+          
+          // If this is a new combination, mark it as seen
+          if (isNewCombination) {
+            seenGroupCombinationsRef.current.add(newCombinationKey);
+          }
+          
           next.set(groupId, {
             ...group,
             memberIds: newMemberIds,
             confirmedIds: newConfirmedIds,
+            isNew: isNewCombination, // Mark as new if this is a new unique combination
           });
         }
         
-        // Also remove any potential groups that match existing confirmed groups
+        // Also remove any potential groups that EXACTLY match existing confirmed groups
         // (this handles cases where a potential group was created before confirmation)
+        // Sub-combinations are allowed (e.g., A,B can exist even if A,B,C is confirmed)
         if (areMembersInConfirmedGroup(group.memberIds)) {
           next.delete(groupId);
+          return;
+        }
+        
+        // Special check for representative groups: if all members are already in the confirmed group they represent, delete it
+        if (group.representativeGroupId && group.representativePhoneId !== undefined) {
+          const representativeGroup = confirmedGroupsRef.current.get(group.representativeGroupId);
+          if (representativeGroup) {
+            const allMembersInRepresentedGroup = Array.from(group.memberIds).every(id => 
+              representativeGroup.memberIds.has(id)
+            );
+            if (allMembersInRepresentedGroup) {
+              next.delete(groupId);
+              return;
+            }
+          }
         }
       });
       
@@ -1263,8 +1365,9 @@ export default function Desktop() {
   // Check if all members of a potential group have confirmed, then move to confirmed groups
   useEffect(() => {
     potentialGroups.forEach((group, groupId) => {
-      // Check if this is a representative group potential group (starts with "potential-rep-")
-      const isRepresentativeGroup = groupId.startsWith('potential-rep-');
+      // Check if this is a representative group by checking the representativeGroupId property
+      // (not just the ID prefix, since existing groups can be converted to representative groups)
+      const isRepresentativeGroup = !!(group.representativeGroupId && group.representativePhoneId !== undefined);
       
       let allConfirmed = false;
       
@@ -1292,10 +1395,8 @@ export default function Desktop() {
       
       if (allConfirmed && group.memberIds.size >= 2) {
         if (isRepresentativeGroup) {
-          // Extract the representative group ID from the potential group ID
-          // Format: "potential-rep-{groupId}-{counter}"
-          const match = groupId.match(/^potential-rep-(.+?)-/);
-          const representativeGroupId = match && match[1] ? match[1] : group.representativeGroupId;
+          // Use the representativeGroupId from the group object (more reliable than parsing ID)
+          const representativeGroupId = group.representativeGroupId;
           
           if (representativeGroupId) {
             const representativeGroup = confirmedGroupsRef.current.get(representativeGroupId);
@@ -1308,6 +1409,13 @@ export default function Desktop() {
               
               // Merge new members into the existing confirmed group
               if (newMembers.length > 0) {
+                // Mark the new combination (all members including new ones) as seen
+                const allMembers = Array.from(representativeGroup.memberIds);
+                newMembers.forEach(id => allMembers.push(id));
+                const memberArray = allMembers.sort((a, b) => a - b);
+                const combinationKey = memberArray.join(',');
+                seenGroupCombinationsRef.current.add(combinationKey);
+                
                 setConfirmedGroups(prev => {
                   const next = new Map(prev);
                   const updatedGroup = next.get(representativeGroupId);
@@ -1338,6 +1446,11 @@ export default function Desktop() {
         
         // Normal flow: Generate a new sequential ID for confirmed groups (e.g., "1", "2", "3")
         const confirmedGroupId = String(nextConfirmedGroupIdRef.current++);
+        
+        // Mark this combination as seen (so it won't show as "new" again)
+        const memberArray = Array.from(group.memberIds).sort((a, b) => a - b);
+        const combinationKey = memberArray.join(',');
+        seenGroupCombinationsRef.current.add(combinationKey);
         
         // Move to confirmed groups with new sequential ID
         setConfirmedGroups(prev => {

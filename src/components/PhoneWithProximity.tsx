@@ -23,6 +23,7 @@ interface PotentialGroup {
   confirmedIds: Set<number>;
   representativePhoneId?: number; // Phone ID that is representing an existing group (for debugging)
   representativeGroupId?: string; // Group ID that this potential group represents (for debugging)
+  isNew?: boolean; // True if this is a new unique combination that hasn't been seen before
 }
 
 interface PhoneWithProximityProps {
@@ -751,11 +752,19 @@ function Screen({
   
   // Check if there are new potential groups (different from the current one being confirmed)
   // A new potential group is one that:
-  // 1. Contains this phone but is different from phonePotentialGroup, OR
-  // 2. Contains phones that are NOT in the current potential/confirmed group
+  // 1. Contains this phone and is marked as a new unique combination (isNew: true), OR
+  // 2. Contains this phone but is different from phonePotentialGroup, OR
+  // 3. Contains phones that are NOT in the current potential/confirmed group
   const hasNewPotentialGroups = (() => {
     if (!potentialGroups || potentialGroups.size === 0) {
       return false;
+    }
+    
+    // First, check if there are any groups marked as new (new unique combination) that contain this phone
+    for (const [groupId, potentialGroup] of potentialGroups) {
+      if (potentialGroup.isNew && potentialGroup.memberIds.has(body.id)) {
+        return true; // This is a new unique combination - show notification
+      }
     }
     
     // If phone is in a potential group, check for other potential groups
@@ -2624,7 +2633,7 @@ export function PhoneWithProximity({
 
   return (
     <div 
-      className="relative size-full bg-black" 
+      className="relative size-full bg-black rounded-[24px]" 
       data-name="PhoneWithProximity"
     >
       {/* Clipping container to prevent content from escaping during swipe */}
