@@ -11,7 +11,8 @@ import {
   checkCollision, 
   resolveCollision, 
   checkBoundaryCollision, 
-  updatePhysics 
+  updatePhysics,
+  getCenterOfMass
 } from "../utils/physics";
 
 type Tool = 'move' | 'interact';
@@ -147,7 +148,7 @@ export default function Desktop() {
   // null means "new group", string means existing group ID
   const [phoneRepresentativeGroups, setPhoneRepresentativeGroups] = useState<Map<number, string | null>>(new Map());
   const phoneRepresentativeGroupsRef = useRef<Map<number, string | null>>(new Map());
-  const [showDebugMenu, setShowDebugMenu] = useState(true);
+  const [showDebugMenu, setShowDebugMenu] = useState(false);
   const nextConfirmedGroupIdRef = useRef(1);
   const potentialGroupsRef = useRef<Map<string, PotentialGroup>>(new Map());
   const confirmedGroupsRef = useRef<Map<string, ConfirmedGroup>>(new Map());
@@ -255,7 +256,7 @@ export default function Desktop() {
         id: 1,
         x: viewportWidth / 2 - phoneWidth / 2 - 200,
         y: viewportHeight / 2 - phoneHeight / 2,
-        rotation: 0,
+        rotation: 0, // Default orientation (0 = upright, Math.PI/2 = 90° clockwise, -Math.PI/2 = 90° counter-clockwise)
         vx: 0,
         vy: 0,
         angularVelocity: 0,
@@ -274,7 +275,7 @@ export default function Desktop() {
         id: 2,
         x: viewportWidth / 2 - phoneWidth / 2 + 200,
         y: viewportHeight / 2 - phoneHeight / 2,
-        rotation: 0,
+        rotation: 0, // Default orientation (0 = upright, Math.PI/2 = 90° clockwise, -Math.PI/2 = 90° counter-clockwise)
         vx: 0,
         vy: 0,
         angularVelocity: 0,
@@ -579,7 +580,7 @@ export default function Desktop() {
       id: nextIdRef.current,
       x,
       y,
-      rotation: (Math.random() - 0.5) * 0.5, // Small random rotation
+      rotation: 0, // Default orientation (change to desired angle in radians, e.g., Math.PI/4 for 45°)
       vx: 0,
       vy: 0,
       angularVelocity: 0,
@@ -972,10 +973,12 @@ export default function Desktop() {
         // Skip if the other body is recently removed
         if (recentlyRemovedPhonesRef.current.has(body2.id)) continue;
         
-        const centerX1 = body1.x + body1.width / 2;
-        const centerY1 = body1.y + body1.height / 2;
-        const centerX2 = body2.x + body2.width / 2;
-        const centerY2 = body2.y + body2.height / 2;
+        const com1 = getCenterOfMass(body1);
+        const com2 = getCenterOfMass(body2);
+        const centerX1 = com1.x;
+        const centerY1 = com1.y;
+        const centerX2 = com2.x;
+        const centerY2 = com2.y;
         
         const dx = centerX2 - centerX1;
         const dy = centerY2 - centerY1;
@@ -1478,16 +1481,15 @@ export default function Desktop() {
     const proximityList: ProximityData[] = [];
     const directProximityMap = new Map<number, number>(); // phoneId -> distanceCm
     
-    // Calculate proximity for all phones (phones in confirmed groups can still detect proximity)
-    const centerX = body.x + body.width / 2;
-    const centerY = body.y + body.height / 2;
-    
     // Helper function to calculate distance and angle between two phones
+    // Uses center of mass (bottom middle) for calculations
     const calculateDistanceAndAngle = (fromBody: RigidBody, toBody: RigidBody) => {
-      const fromCenterX = fromBody.x + fromBody.width / 2;
-      const fromCenterY = fromBody.y + fromBody.height / 2;
-      const toCenterX = toBody.x + toBody.width / 2;
-      const toCenterY = toBody.y + toBody.height / 2;
+      const fromCOM = getCenterOfMass(fromBody);
+      const toCOM = getCenterOfMass(toBody);
+      const fromCenterX = fromCOM.x;
+      const fromCenterY = fromCOM.y;
+      const toCenterX = toCOM.x;
+      const toCenterY = toCOM.y;
       
       const dx = toCenterX - fromCenterX;
       const dy = toCenterY - fromCenterY;
@@ -1836,7 +1838,7 @@ export default function Desktop() {
           className="bg-white shadow-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 pointer-events-auto z-50"
           style={{ position: 'absolute', left: '12px', top: '12px', borderRadius: '24px' }}
         >
-          Debug
+          Groups
         </button>
       )}
 
