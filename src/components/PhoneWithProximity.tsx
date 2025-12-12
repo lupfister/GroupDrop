@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
 import svgPathsPhone from "../imports/svg-xt55a23x92";
 import svgPaths from "../imports/svg-z15fdg36cs";
 import imgBezel from "figma:asset/898d6b6326c8696cb62d35eae092fcdb03f4c874.png";
@@ -235,6 +235,8 @@ function Screen({
   const [isConfirmSwiping, setIsConfirmSwiping] = useState(false);
   const [isRepresentativeDropdownOpen, setIsRepresentativeDropdownOpen] = useState(false);
   const representativeDropdownRef = useRef<HTMLDivElement>(null);
+  const representativeButtonRef = useRef<HTMLButtonElement>(null);
+  const [buttonWidth, setButtonWidth] = useState<number | null>(null);
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
   
@@ -251,6 +253,14 @@ function Screen({
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [isRepresentativeDropdownOpen]);
+
+  // Measure button width when dropdown state or selected group changes
+  useLayoutEffect(() => {
+    if (representativeButtonRef.current) {
+      const width = representativeButtonRef.current.offsetWidth;
+      setButtonWidth(width);
+    }
+  }, [isRepresentativeDropdownOpen, currentRepresentativeGroupId, confirmedGroups]);
   
   // Swipe-to-remove state
   const [swipedUser, setSwipedUser] = useState<number | null>(null);
@@ -875,11 +885,13 @@ function Screen({
   
   // Get all confirmed phones: show based on which group's screen is active
   // IMPORTANT: For confirmed groups, always use locked-in members regardless of proximity
-  const allConfirmedPhones = isViewingConfirmedGroupScreen
+  // CRITICAL: When viewing a confirmed group screen, ALWAYS use the confirmed group members
+  // and never fall through to potential group logic, even if a new potential group forms
+  const allConfirmedPhones = (isViewingConfirmedGroupScreen && activeConfirmedGroup)
     ? Array.from(activeConfirmedGroup.memberIds)
         .map(id => allBodies.find(b => b.id === id))
         .filter((phone): phone is RigidBody => phone !== undefined)
-    : isViewingPotentialGroupScreen
+    : (isViewingPotentialGroupScreen && activePotentialGroup)
       ? Array.from(activePotentialGroup.memberIds)
           .filter(id => activePotentialGroup.confirmedIds.has(id))
           .map(id => allBodies.find(b => b.id === id))
@@ -1083,14 +1095,16 @@ function Screen({
     : '12px';
 
   // Control visibility and exit animation of "Waiting for Others..." pill
-  const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
+  // Only show when user has confirmed in a potential group AND there are unconfirmed members
+  const shouldShowPill = unconfirmedNearbyPhones.length > 0 && hasConfirmedInPotentialGroup;
+  const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(shouldShowPill);
   const [isUnconfirmedExiting, setIsUnconfirmedExiting] = useState(false);
-  const prevHasUnconfirmedRef = useRef(unconfirmedNearbyPhones.length > 0);
+  const prevShouldShowPillRef = useRef(shouldShowPill);
 
   useEffect(() => {
-    const hasUnconfirmed = unconfirmedNearbyPhones.length > 0;
-    const prevHasUnconfirmed = prevHasUnconfirmedRef.current;
-    prevHasUnconfirmedRef.current = hasUnconfirmed;
+    const shouldShow = unconfirmedNearbyPhones.length > 0 && hasConfirmedInPotentialGroup;
+    const prevShouldShow = prevShouldShowPillRef.current;
+    prevShouldShowPillRef.current = shouldShow;
 
     // If viewing a confirmed group screen, never show the pill (confirmed groups are complete)
     if (isViewingConfirmedGroupScreen) {
@@ -1101,20 +1115,20 @@ function Screen({
 
     // Outside groupConfirm, just follow presence (no special exit animation)
     if (viewState !== 'groupConfirm') {
-      setShowUnconfirmedPill(hasUnconfirmed);
+      setShowUnconfirmedPill(shouldShow);
       setIsUnconfirmedExiting(false);
       return;
     }
 
-    // While there are unconfirmed users, ensure pill is visible and in "enter" state
-    if (hasUnconfirmed) {
+    // While there are unconfirmed users AND user has confirmed, ensure pill is visible and in "enter" state
+    if (shouldShow) {
       setShowUnconfirmedPill(true);
       setIsUnconfirmedExiting(false);
       return;
     }
 
-    // Transitioned from some unconfirmed -> none while in groupConfirm: play reverse animation
-    if (prevHasUnconfirmed && !hasUnconfirmed) {
+    // Transitioned from should show -> shouldn't show while in groupConfirm: play reverse animation
+    if (prevShouldShow && !shouldShow) {
       setIsUnconfirmedExiting(true);
       setShowUnconfirmedPill(true);
 
@@ -1125,7 +1139,7 @@ function Screen({
 
       return () => clearTimeout(timeout);
     }
-  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen]);
+  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen, hasConfirmedInPotentialGroup]);
 
   // Bug 2 Fix: Update activeGroupId when a potential group transitions to confirmed
   // When a potential group becomes confirmed, it gets a new sequential ID (e.g., "potential-1" -> "1")
@@ -1912,6 +1926,7 @@ function Screen({
                 }}
               >
                 <button
+                  ref={representativeButtonRef}
                   onClick={(e) => {
                     if (tool !== 'interact' || !hasConfirmedGroups) return;
                     e.stopPropagation();
@@ -1923,10 +1938,19 @@ function Screen({
                     fontFamily: "'SF Pro', sans-serif",
                     fontSize: '12px',
                     borderRadius: isRepresentativeDropdownOpen ? '8px 8px 0 0' : '8px',
+                    width: 'fit-content',
                     minWidth: '140px',
+                    maxWidth: '300px',
                   }}
                 >
-                  <span>
+                  <span
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: '100%',
+                    }}
+                  >
                     {selectedGroup 
                       ? getMemberNames(selectedGroup.memberIds).join(', ')
                       : 'New Group'}
@@ -1941,6 +1965,7 @@ function Screen({
                         display: 'inline-flex',
                         alignItems: 'center',
                         justifyContent: 'center',
+                        marginLeft: '8px',
                       }}
                     >
                       <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1954,7 +1979,7 @@ function Screen({
                   <div 
                     className="absolute bg-[#222222] shadow-lg overflow-hidden"
                     style={{
-                      width: 'fit-content',
+                      width: buttonWidth ? `${buttonWidth}px` : 'fit-content',
                       minWidth: '140px',
                       top: '100%',
                       zIndex: 101,
@@ -2219,23 +2244,22 @@ function Screen({
               style={{ fontVariationSettings: "'wdth' 100" }}
             >
               {(() => {
-                // Helper function to get names from member IDs
-                const getNamesFromMemberIds = (memberIds: Set<number>): string => {
-                  const names = Array.from(memberIds)
-                    .map(id => allBodies.find(b => b.id === id)?.name)
-                    .filter((name): name is string => name !== undefined);
-                  return names.join(', ');
+                // Helper function to get count from member IDs
+                const getCountFromMemberIds = (memberIds: Set<number>): number => {
+                  return memberIds.size;
                 };
 
+                let count = 0;
                 if (isViewingConfirmedGroupScreen && activeConfirmedGroup) {
-                  const names = getNamesFromMemberIds(activeConfirmedGroup.memberIds);
-                  return names || 'New Group';
+                  count = getCountFromMemberIds(activeConfirmedGroup.memberIds);
                 } else if (isViewingPotentialGroupScreen && activePotentialGroup) {
-                  const names = getNamesFromMemberIds(activePotentialGroup.memberIds);
-                  return names || 'New Group';
+                  count = getCountFromMemberIds(activePotentialGroup.memberIds);
                 } else if (allConfirmedPhonesFiltered.length > 0) {
-                  const names = allConfirmedPhonesFiltered.map(phone => phone.name).join(', ');
-                  return names || 'New Group';
+                  count = allConfirmedPhonesFiltered.length;
+                }
+
+                if (count > 0) {
+                  return `${count} people`;
                 } else {
                   return 'New Group';
                 }
