@@ -27,6 +27,7 @@ export interface RigidBody {
   
   // Profile
   profileImage: string;
+  name: string;
 }
 
 // Get center of mass (bottom middle of the phone)

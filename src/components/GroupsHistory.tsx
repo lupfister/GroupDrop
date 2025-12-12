@@ -216,10 +216,10 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recent
                     </div>
                     <div className="flex-1">
                       <p className="font-['SF_Pro:Semibold',sans-serif] font-[590] text-[14px] text-white" style={{ fontVariationSettings: "'wdth' 100" }}>
-                        Group {group.id}
+                        {members.length} {members.length === 1 ? 'person' : 'people'}
                       </p>
-                      <p className="font-['SF_Pro:Regular',sans-serif] font-normal mt-0.5" style={{ fontVariationSettings: "'wdth' 100", color: 'rgba(255, 255, 255, 0.7)', fontSize: '10px' }}>
-                        {members.length} member{members.length !== 1 ? 's' : ''}
+                      <p className="font-['SF_Pro:Regular',sans-serif] font-normal mt-0.5" style={{ fontVariationSettings: "'wdth' 100", color: 'rgba(255, 255, 255, 0.7)', fontSize: '12px' }}>
+                        {members.map(m => m.name).join(', ')}
                       </p>
                     </div>
                   </div>
@@ -266,7 +266,7 @@ export function GroupsHistory({ confirmedGroups, allBodies, onBack, tool, recent
                     )}
                     <div className="flex-1">
                       <p className="font-['SF_Pro:Regular',sans-serif] font-normal text-[12px] text-white/80" style={{ fontVariationSettings: "'wdth' 100" }}>
-                        Phone {phoneId}
+                        {phone?.name || `Phone ${phoneId}`}
                       </p>
                       <p className="font-['SF_Pro:Regular',sans-serif] font-normal text-[10px] text-white/50 mt-0.5" style={{ fontVariationSettings: "'wdth' 100" }}>
                         Removed - must move away to rejoin

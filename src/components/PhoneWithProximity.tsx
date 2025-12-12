@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
 import svgPathsPhone from "../imports/svg-xt55a23x92";
 import svgPaths from "../imports/svg-z15fdg36cs";
 import imgBezel from "figma:asset/898d6b6326c8696cb62d35eae092fcdb03f4c874.png";
@@ -235,8 +235,12 @@ function Screen({
   const [isConfirmSwiping, setIsConfirmSwiping] = useState(false);
   const [isRepresentativeDropdownOpen, setIsRepresentativeDropdownOpen] = useState(false);
   const representativeDropdownRef = useRef<HTMLDivElement>(null);
+  const representativeButtonRef = useRef<HTMLButtonElement>(null);
+  const [buttonWidth, setButtonWidth] = useState<number | null>(null);
   const springCurve = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const springDuration = '0.45s';
+  const enterDuration = '0.3s'; // Faster for entering
+  const exitDuration = '0.4s'; // Slower for exiting to make it smoother
   
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -251,12 +255,31 @@ function Screen({
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [isRepresentativeDropdownOpen]);
+
+  // Measure button width when dropdown state or selected group changes
+  useLayoutEffect(() => {
+    if (representativeButtonRef.current) {
+      const width = representativeButtonRef.current.offsetWidth;
+      setButtonWidth(width);
+    }
+  }, [isRepresentativeDropdownOpen, currentRepresentativeGroupId, confirmedGroups]);
   
   // Swipe-to-remove state
   const [swipedUser, setSwipedUser] = useState<number | null>(null);
   const [swipeRemoveOffset, setSwipeRemoveOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const swipeRemoveStartRef = useRef<{ x: number; y: number; targetUserId: number } | null>(null);
   const currentSwipeRemoveDistanceRef = useRef(0);
+  
+  // Track previous proximity phoneIds to detect enter/exit animations
+  const previousProximityPhoneIdsRef = useRef<Set<number>>(new Set());
+  const [exitingPhoneIds, setExitingPhoneIds] = useState<Set<number>>(new Set());
+  const [enteringPhoneIds, setEnteringPhoneIds] = useState<Set<number>>(new Set());
+  // Store last known proximity data for exiting users so we can animate them out
+  const lastProximityDataRef = useRef<Map<number, ProximityData>>(new Map());
+  // Track which exiting users should actually animate (after initial render at scale 1)
+  const [exitingAnimatingIds, setExitingAnimatingIds] = useState<Set<number>>(new Set());
+  // Track which entering users should animate from 0 to 1 (after initial render at scale 0)
+  const [enteringAnimatingIds, setEnteringAnimatingIds] = useState<Set<number>>(new Set());
 
   const updateViewState = (nextState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', groupId?: string | null) => {
     setViewState(nextState);
@@ -286,6 +309,108 @@ function Screen({
       onStateChange(viewState, swipeOffset);
     }
   }, [swipeOffset, viewState, onStateChange]);
+  
+  // Track entering/exiting users for animation
+  useEffect(() => {
+    const currentPhoneIds = new Set(
+      proximityData
+        .filter(data => isWithinProximityRange(data))
+        .map(data => data.phoneId)
+    );
+    
+    const previousPhoneIds = previousProximityPhoneIdsRef.current;
+    
+    // Store current proximity data for all users (so we can use it for exiting users)
+    proximityData
+      .filter(data => isWithinProximityRange(data))
+      .forEach(data => {
+        lastProximityDataRef.current.set(data.phoneId, data);
+      });
+    
+    // Find entering users (in current, not in previous)
+    const entering = new Set<number>();
+    currentPhoneIds.forEach(phoneId => {
+      if (!previousPhoneIds.has(phoneId)) {
+        entering.add(phoneId);
+      }
+    });
+    
+    // Find exiting users (were in previous, not in current)
+    const exiting = new Set<number>();
+    previousPhoneIds.forEach(phoneId => {
+      if (!currentPhoneIds.has(phoneId)) {
+        exiting.add(phoneId);
+      }
+    });
+    
+    // Update entering state - trigger animation immediately (no delay)
+    if (entering.size > 0) {
+      // Add to entering state immediately
+      setEnteringPhoneIds(prev => {
+        const updated = new Set(prev);
+        entering.forEach(id => updated.add(id));
+        return updated;
+      });
+      // Start animation after element is rendered at scale 0 (use double RAF for immediate start)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setEnteringAnimatingIds(prev => {
+            const updated = new Set(prev);
+            entering.forEach(id => updated.add(id));
+            return updated;
+          });
+        });
+      });
+      // Clear entering state after animation completes (scale from 0 to 1)
+      setTimeout(() => {
+        setEnteringPhoneIds(prev => {
+          const updated = new Set(prev);
+          entering.forEach(id => updated.delete(id));
+          return updated;
+        });
+        setEnteringAnimatingIds(prev => {
+          const updated = new Set(prev);
+          entering.forEach(id => updated.delete(id));
+          return updated;
+        });
+      }, 300); // Match enterDuration (300ms)
+    }
+    
+    // Update exiting state
+    if (exiting.size > 0) {
+      setExitingPhoneIds(exiting);
+      // Start exit animation after a brief delay to ensure element is rendered at scale 1 first
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setExitingAnimatingIds(prev => {
+            const updated = new Set(prev);
+            exiting.forEach(id => updated.add(id));
+            return updated;
+          });
+        });
+      });
+      // Clear exiting state and remove last proximity data after animation completes
+      setTimeout(() => {
+        setExitingPhoneIds(prev => {
+          const updated = new Set(prev);
+          exiting.forEach(id => {
+            updated.delete(id);
+            lastProximityDataRef.current.delete(id);
+          });
+          return updated;
+        });
+        setExitingAnimatingIds(prev => {
+          const updated = new Set(prev);
+          exiting.forEach(id => updated.delete(id));
+          return updated;
+        });
+      }, 400); // Match exitDuration (400ms)
+    }
+    
+    // Update previous ref
+    previousProximityPhoneIdsRef.current = currentPhoneIds;
+  }, [proximityData]);
+  
   
   // Check if any phones are within proximity range (direct or indirect)
   // Suppress notifications if this user was recently removed
@@ -875,11 +1000,13 @@ function Screen({
   
   // Get all confirmed phones: show based on which group's screen is active
   // IMPORTANT: For confirmed groups, always use locked-in members regardless of proximity
-  const allConfirmedPhones = isViewingConfirmedGroupScreen
+  // CRITICAL: When viewing a confirmed group screen, ALWAYS use the confirmed group members
+  // and never fall through to potential group logic, even if a new potential group forms
+  const allConfirmedPhones = (isViewingConfirmedGroupScreen && activeConfirmedGroup)
     ? Array.from(activeConfirmedGroup.memberIds)
         .map(id => allBodies.find(b => b.id === id))
         .filter((phone): phone is RigidBody => phone !== undefined)
-    : isViewingPotentialGroupScreen
+    : (isViewingPotentialGroupScreen && activePotentialGroup)
       ? Array.from(activePotentialGroup.memberIds)
           .filter(id => activePotentialGroup.confirmedIds.has(id))
           .map(id => allBodies.find(b => b.id === id))
@@ -1083,14 +1210,16 @@ function Screen({
     : '12px';
 
   // Control visibility and exit animation of "Waiting for Others..." pill
-  const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
+  // Only show when user has confirmed in a potential group AND there are unconfirmed members
+  const shouldShowPill = unconfirmedNearbyPhones.length > 0 && hasConfirmedInPotentialGroup;
+  const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(shouldShowPill);
   const [isUnconfirmedExiting, setIsUnconfirmedExiting] = useState(false);
-  const prevHasUnconfirmedRef = useRef(unconfirmedNearbyPhones.length > 0);
+  const prevShouldShowPillRef = useRef(shouldShowPill);
 
   useEffect(() => {
-    const hasUnconfirmed = unconfirmedNearbyPhones.length > 0;
-    const prevHasUnconfirmed = prevHasUnconfirmedRef.current;
-    prevHasUnconfirmedRef.current = hasUnconfirmed;
+    const shouldShow = unconfirmedNearbyPhones.length > 0 && hasConfirmedInPotentialGroup;
+    const prevShouldShow = prevShouldShowPillRef.current;
+    prevShouldShowPillRef.current = shouldShow;
 
     // If viewing a confirmed group screen, never show the pill (confirmed groups are complete)
     if (isViewingConfirmedGroupScreen) {
@@ -1101,20 +1230,20 @@ function Screen({
 
     // Outside groupConfirm, just follow presence (no special exit animation)
     if (viewState !== 'groupConfirm') {
-      setShowUnconfirmedPill(hasUnconfirmed);
+      setShowUnconfirmedPill(shouldShow);
       setIsUnconfirmedExiting(false);
       return;
     }
 
-    // While there are unconfirmed users, ensure pill is visible and in "enter" state
-    if (hasUnconfirmed) {
+    // While there are unconfirmed users AND user has confirmed, ensure pill is visible and in "enter" state
+    if (shouldShow) {
       setShowUnconfirmedPill(true);
       setIsUnconfirmedExiting(false);
       return;
     }
 
-    // Transitioned from some unconfirmed -> none while in groupConfirm: play reverse animation
-    if (prevHasUnconfirmed && !hasUnconfirmed) {
+    // Transitioned from should show -> shouldn't show while in groupConfirm: play reverse animation
+    if (prevShouldShow && !shouldShow) {
       setIsUnconfirmedExiting(true);
       setShowUnconfirmedPill(true);
 
@@ -1125,7 +1254,7 @@ function Screen({
 
       return () => clearTimeout(timeout);
     }
-  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen]);
+  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen, hasConfirmedInPotentialGroup]);
 
   // Bug 2 Fix: Update activeGroupId when a potential group transitions to confirmed
   // When a potential group becomes confirmed, it gets a new sequential ID (e.g., "potential-1" -> "1")
@@ -1396,7 +1525,7 @@ function Screen({
                 viewState === 'homeScreen'
                   ? '60%'
                   : viewState === 'groupSearch'
-                    ? 'calc(50% - 18px)'
+                    ? 'calc(50% + 14px)'
                     : '60.26px', // slightly above "New Group" pill
               transform:
                 viewState === 'homeScreen'
@@ -1614,6 +1743,14 @@ function Screen({
             // so we should show all users in proximity, not just those already in the group
             // Removed users are filtered out here to ensure they don't appear on any device
 
+            // Add exiting users with their last known proximity data so they can animate out
+            exitingPhoneIds.forEach(phoneId => {
+              const lastData = lastProximityDataRef.current.get(phoneId);
+              if (lastData && !recentlyRemovedPhones?.has(phoneId)) {
+                nearbyWithinRange.push(lastData);
+              }
+            });
+
             if (nearbyWithinRange.length === 0) return null;
 
             // Shared constants for layout and sizing
@@ -1747,7 +1884,7 @@ function Screen({
             resolveOverlaps2D(fullXs, fullYs, fullSizes, 6);
 
             const topOffset =
-              viewState === 'homeScreen' ? '60%' : 'calc(50% - 18px)';
+              viewState === 'homeScreen' ? '60%' : 'calc(50% + 14px)';
 
             return layoutEntries.map((entry, index) => {
               const isHome = viewState === 'homeScreen';
@@ -1765,7 +1902,32 @@ function Screen({
               // Only allow swiping unconfirmed users in groupSearch view
               const isSwipeable = isGroupSearch && !isConfirmed && tool === 'interact';
 
-              const scale = isBeingSwiped ? Math.max(0.5, 1 - currentSwipeRemoveDistanceRef.current / 200) : 1;
+              // Check if user is entering or exiting
+              // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
+              // This check happens immediately on render, no state delay
+              const isNewlyAppearing = !previousProximityPhoneIdsRef.current.has(entry.phoneId);
+              const isEntering = isNewlyAppearing || enteringPhoneIds.has(entry.phoneId);
+              const isExiting = exitingPhoneIds.has(entry.phoneId);
+              
+              // Calculate scale: entering starts at 0 (animates to 1 immediately), exiting starts at 1 (animates to 0), otherwise 1
+              let scale = 1;
+              if (isExiting) {
+                // Only animate to 0 if we've triggered the animation (after initial render at scale 1)
+                const isAnimatingExit = exitingAnimatingIds.has(entry.phoneId);
+                scale = isAnimatingExit ? 0 : 1;
+              } else if (isEntering) {
+                // Start at 0, then animate to 1 when enteringAnimatingIds is set
+                const isAnimatingEnter = enteringAnimatingIds.has(entry.phoneId);
+                scale = isAnimatingEnter ? 1 : 0;
+              }
+              
+              // Override with swipe scale if being swiped
+              const swipeScale = isBeingSwiped ? Math.max(0.5, 1 - currentSwipeRemoveDistanceRef.current / 200) : 1;
+              scale = isBeingSwiped ? swipeScale : scale;
+              
+              // Determine transition duration based on animation type
+              const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
+              
               const transformValue = `translate(-50%, -50%) translate(${x + swipeOffsetForUser.x}px, ${y + swipeOffsetForUser.y}px) scale(${scale})`;
 
               return (
@@ -1780,7 +1942,7 @@ function Screen({
                     height: `${size}px`,
                     borderRadius: isHome ? '50%' : `${size / 2}px`,
                     willChange: 'transform, width, height, opacity',
-                    transition: isBeingSwiped ? 'none' : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${springDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
+                    transition: isBeingSwiped ? 'none' : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${transitionDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
                     overflow: 'hidden',
                     backgroundColor: 'white',
                     opacity,
@@ -1804,7 +1966,7 @@ function Screen({
           
           {/* Swipe to Confirm with arrow - only visible in full view */}
           <div 
-            className="absolute h-[577.625px] left-[calc(50%+0.5px)] top-[31.19px] translate-x-[-50%] w-[577.626px]"
+            className="absolute h-[577.625px] left-[calc(50%+0.5px)] top-[63.19px] translate-x-[-50%] w-[577.626px]"
             onMouseDown={handleConfirmSwipeStart}
             onTouchStart={handleConfirmSwipeStart}
             style={{
@@ -1874,6 +2036,29 @@ function Screen({
             
             // Always show dropdown (even if phone isn't in any groups - they can select "New Group")
             const selectedGroupId = currentRepresentativeGroupId || null;
+            const hasConfirmedGroups = phoneGroups.length > 0;
+            
+            // Get selected group for display
+            const selectedGroup = selectedGroupId && confirmedGroups 
+              ? confirmedGroups.get(selectedGroupId) 
+              : null;
+            
+            // Helper function to get member names for display
+            const getMemberNames = (memberIds: Set<number>): string[] => {
+              return Array.from(memberIds)
+                .map(id => {
+                  const phone = allBodies.find(b => b.id === id);
+                  return phone?.name || `User ${id}`;
+                })
+                .filter((name): name is string => name !== undefined);
+            };
+            
+            // Get nearby phone IDs for "New Group"
+            const nearbyPhoneIds = proximityData
+              .filter(data => data.distanceCm <= 8.5)
+              .filter(data => !recentlyRemovedPhones?.has(data.phoneId))
+              .map(data => data.phoneId)
+              .slice(0, 4);
             
             return (
               <div 
@@ -1889,28 +2074,65 @@ function Screen({
                 }}
               >
                 <button
+                  ref={representativeButtonRef}
                   onClick={(e) => {
-                    if (tool !== 'interact') return;
+                    if (tool !== 'interact' || !hasConfirmedGroups) return;
                     e.stopPropagation();
                     setIsRepresentativeDropdownOpen(!isRepresentativeDropdownOpen);
                   }}
-                  className="bg-[#222222] text-white px-3 py-1.5 rounded-lg text-sm flex items-center gap-2 hover:bg-[#333333] transition-colors"
+                  disabled={!hasConfirmedGroups}
+                  className="bg-[#222222] text-white px-3 py-1.5 text-sm flex items-center justify-between hover:bg-[#333333] transition-colors"
                   style={{
                     fontFamily: "'SF Pro', sans-serif",
                     fontSize: '12px',
-                    minWidth: '120px',
+                    borderRadius: isRepresentativeDropdownOpen ? '8px 8px 0 0' : '8px',
+                    width: 'fit-content',
+                    minWidth: '140px',
+                    maxWidth: '300px',
                   }}
                 >
-                  <span>{selectedGroupId ? `Group ${selectedGroupId}` : 'New Group'}</span>
-                  <span style={{ fontSize: '10px' }}>{isRepresentativeDropdownOpen ? '▲' : '▼'}</span>
+                  <span
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: '100%',
+                    }}
+                  >
+                    {selectedGroup 
+                      ? getMemberNames(selectedGroup.memberIds).join(', ')
+                      : 'New Group'}
+                  </span>
+                  {hasConfirmedGroups && (
+                    <span 
+                      style={{ 
+                        fontSize: '12px',
+                        opacity: 0.7,
+                        transition: 'transform 0.2s ease, opacity 0.2s ease',
+                        transform: isRepresentativeDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        marginLeft: '8px',
+                      }}
+                    >
+                      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M0.75 0.75L4.75 4.75L8.75 0.75" stroke="#E3E3E3" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </span>
+                  )}
                 </button>
                 
                 {isRepresentativeDropdownOpen && (
                   <div 
-                    className="absolute mt-1 bg-[#222222] rounded-lg shadow-lg overflow-hidden"
+                    className="absolute bg-[#222222] shadow-lg overflow-hidden"
                     style={{
-                      minWidth: '120px',
+                      width: buttonWidth ? `${buttonWidth}px` : 'fit-content',
+                      minWidth: '140px',
+                      top: '100%',
                       zIndex: 101,
+                      borderBottomLeftRadius: '8px',
+                      borderBottomRightRadius: '8px',
                     }}
                   >
                     <button
@@ -1921,37 +2143,87 @@ function Screen({
                         }
                         setIsRepresentativeDropdownOpen(false);
                       }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-[#333333] transition-colors ${
+                      className={`w-full text-left px-4 py-2.5 hover:bg-[#333333] transition-colors flex items-center ${
                         selectedGroupId === null ? 'bg-[#333333]' : ''
                       }`}
                       style={{
                         fontFamily: "'SF Pro', sans-serif",
-                        color: 'white',
                       }}
                     >
-                      New Group
+                      {/* Text content */}
+                      <div className="flex-1 min-w-0">
+                        <div 
+                          className="text-white"
+                          style={{
+                            fontSize: '15px',
+                            fontWeight: 500,
+                            marginBottom: '3px',
+                            lineHeight: '1.2',
+                          }}
+                        >
+                          New Group
+                        </div>
+                        <div 
+                          style={{
+                            fontSize: '12px',
+                            fontWeight: 400,
+                            color: 'rgba(255, 255, 255, 0.7)',
+                            lineHeight: '1.2',
+                          }}
+                        >
+                          {getMemberNames(new Set([body.id, ...nearbyPhoneIds])).join(', ')}
+                        </div>
+                      </div>
                     </button>
-                    {phoneGroups.map((group) => (
-                      <button
-                        key={group.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onRepresentativeGroupChange) {
-                            onRepresentativeGroupChange(body.id, group.id);
-                          }
-                          setIsRepresentativeDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 text-sm hover:bg-[#333333] transition-colors ${
-                          selectedGroupId === group.id ? 'bg-[#333333]' : ''
-                        }`}
-                        style={{
-                          fontFamily: "'SF Pro', sans-serif",
-                          color: 'white',
-                        }}
-                      >
-                        Group {group.id}
-                      </button>
-                    ))}
+                    {phoneGroups.map((group) => {
+                      const groupMemberIds = group.memberIds;
+                      const groupMemberNames = getMemberNames(groupMemberIds);
+                      const isSelected = selectedGroupId === group.id;
+                      
+                      return (
+                        <button
+                          key={group.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onRepresentativeGroupChange) {
+                              onRepresentativeGroupChange(body.id, group.id);
+                            }
+                            setIsRepresentativeDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-4 py-2.5 hover:bg-[#333333] transition-colors flex items-center ${
+                            isSelected ? 'bg-[#333333]' : ''
+                          }`}
+                          style={{
+                            fontFamily: "'SF Pro', sans-serif",
+                          }}
+                        >
+                          {/* Text content */}
+                          <div className="flex-1 min-w-0">
+                            <div 
+                              className="text-white"
+                              style={{
+                                fontSize: '15px',
+                                fontWeight: 500,
+                                marginBottom: '3px',
+                                lineHeight: '1.2',
+                              }}
+                            >
+                              {groupMemberIds.size} {groupMemberIds.size === 1 ? 'person' : 'people'}
+                            </div>
+                            <div 
+                              style={{
+                                fontSize: '12px',
+                                fontWeight: 400,
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                lineHeight: '1.2',
+                              }}
+                            >
+                              {groupMemberNames.join(', ')}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -2119,7 +2391,27 @@ function Screen({
               className="font-['SF_Pro:Bold',sans-serif] font-bold leading-[normal] relative shrink-0 text-[12.338px] text-nowrap text-white tracking-[-0.116px] whitespace-pre"
               style={{ fontVariationSettings: "'wdth' 100" }}
             >
-              New Group
+              {(() => {
+                // Helper function to get count from member IDs
+                const getCountFromMemberIds = (memberIds: Set<number>): number => {
+                  return memberIds.size;
+                };
+
+                let count = 0;
+                if (isViewingConfirmedGroupScreen && activeConfirmedGroup) {
+                  count = getCountFromMemberIds(activeConfirmedGroup.memberIds);
+                } else if (isViewingPotentialGroupScreen && activePotentialGroup) {
+                  count = getCountFromMemberIds(activePotentialGroup.memberIds);
+                } else if (allConfirmedPhonesFiltered.length > 0) {
+                  count = allConfirmedPhonesFiltered.length;
+                }
+
+                if (count > 0) {
+                  return `${count} people`;
+                } else {
+                  return 'New Group';
+                }
+              })()}
             </p>
           </div>
 
@@ -2251,7 +2543,16 @@ function Screen({
 
             {/* Nearby phone profiles */}
             {(() => {
-              const nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              let nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              
+              // Add exiting users with their last known proximity data so they can animate out
+              exitingPhoneIds.forEach(phoneId => {
+                const lastData = lastProximityDataRef.current.get(phoneId);
+                if (lastData) {
+                  nearbyWithinRange.push(lastData);
+                }
+              });
+              
               if (nearbyWithinRange.length === 0) return null;
 
               const notificationMaxDisplayRadius = 100;
@@ -2349,6 +2650,28 @@ function Screen({
                 const x = notifXs[index];
                 const y = notifYs[index];
                 const size = notificationSize;
+                
+                // Check if user is entering or exiting
+                // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
+                // This check happens immediately on render, no state delay
+                const isNewlyAppearing = !previousProximityPhoneIdsRef.current.has(entry.phoneId);
+                const isEntering = isNewlyAppearing || enteringPhoneIds.has(entry.phoneId);
+                const isExiting = exitingPhoneIds.has(entry.phoneId);
+                
+                // Calculate scale: entering starts at 0 (animates to 1 immediately), exiting starts at 1 (animates to 0), otherwise 1
+                let scale = 1;
+                if (isExiting) {
+                  // Only animate to 0 if we've triggered the animation (after initial render at scale 1)
+                  const isAnimatingExit = exitingAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingExit ? 0 : 1;
+                } else if (isEntering) {
+                  // Start at 0, then animate to 1 when enteringAnimatingIds is set
+                  const isAnimatingEnter = enteringAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingEnter ? 1 : 0;
+                }
+                
+                // Determine transition duration based on animation type
+                const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
 
                 return (
                   <div
@@ -2357,12 +2680,13 @@ function Screen({
                       position: 'absolute',
                       left: '50%',
                       top: '60%',
-                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`,
                       width: `${size}px`,
                       height: `${size}px`,
                       borderRadius: '50%',
                       overflow: 'hidden',
                       backgroundColor: 'white',
+                      transition: `transform ${transitionDuration} ${springCurve}, width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}`,
                     }}
                   >
                     <img
@@ -2449,7 +2773,16 @@ function Screen({
 
             {/* Nearby phone profiles */}
             {(() => {
-              const nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              let nearbyWithinRange = proximityData.filter(data => isWithinProximityRange(data));
+              
+              // Add exiting users with their last known proximity data so they can animate out
+              exitingPhoneIds.forEach(phoneId => {
+                const lastData = lastProximityDataRef.current.get(phoneId);
+                if (lastData) {
+                  nearbyWithinRange.push(lastData);
+                }
+              });
+              
               if (nearbyWithinRange.length === 0) return null;
 
               const notificationMaxDisplayRadius = 100;
@@ -2547,6 +2880,28 @@ function Screen({
                 const x = notifXs[index];
                 const y = notifYs[index];
                 const size = notificationSize;
+                
+                // Check if user is entering or exiting
+                // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
+                // This check happens immediately on render, no state delay
+                const isNewlyAppearing = !previousProximityPhoneIdsRef.current.has(entry.phoneId);
+                const isEntering = isNewlyAppearing || enteringPhoneIds.has(entry.phoneId);
+                const isExiting = exitingPhoneIds.has(entry.phoneId);
+                
+                // Calculate scale: entering starts at 0 (animates to 1 immediately), exiting starts at 1 (animates to 0), otherwise 1
+                let scale = 1;
+                if (isExiting) {
+                  // Only animate to 0 if we've triggered the animation (after initial render at scale 1)
+                  const isAnimatingExit = exitingAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingExit ? 0 : 1;
+                } else if (isEntering) {
+                  // Start at 0, then animate to 1 when enteringAnimatingIds is set
+                  const isAnimatingEnter = enteringAnimatingIds.has(entry.phoneId);
+                  scale = isAnimatingEnter ? 1 : 0;
+                }
+                
+                // Determine transition duration based on animation type
+                const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
 
                 return (
                   <div
@@ -2555,12 +2910,13 @@ function Screen({
                       position: 'absolute',
                       left: '50%',
                       top: '60%',
-                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+                      transform: `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`,
                       width: `${size}px`,
                       height: `${size}px`,
                       borderRadius: '50%',
                       overflow: 'hidden',
                       backgroundColor: 'white',
+                      transition: `transform ${transitionDuration} ${springCurve}, width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}`,
                     }}
                   >
                     <img
