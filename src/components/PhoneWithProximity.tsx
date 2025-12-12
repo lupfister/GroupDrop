@@ -571,6 +571,11 @@ function Screen({
   const lastKnownPositionsRef = useRef<Map<number, { x: number; y: number; size: number; angleDeg: number }>>(new Map());
   const prevPositionsRef = useRef<Map<number, { x: number; y: number; size: number }>>(new Map());
 
+  // Get nearby phones within range (used for icon animations)
+  const nearbyWithinRangeForAnimation = proximityData
+    .filter(data => data.distanceCm <= 8.5)
+    .filter(data => !recentlyRemovedPhones?.has(data.phoneId));
+
   useEffect(() => {
     if (viewState === 'groupConfirm') {
       // Reset in groupConfirm
@@ -580,7 +585,7 @@ function Screen({
       return;
     }
 
-    const currentIds = new Set(nearbyWithinRange.map(data => data.phoneId));
+    const currentIds = new Set(nearbyWithinRangeForAnimation.map(data => data.phoneId));
     const prevIds = prevNearbyIdsRef.current;
 
     // Find icons that left range (before we update anything)
@@ -622,7 +627,7 @@ function Screen({
     });
 
     prevNearbyIdsRef.current = currentIds;
-  }, [nearbyWithinRange, viewState, allBodies]);
+  }, [nearbyWithinRangeForAnimation, viewState, allBodies, recentlyRemovedPhones]);
 
   // Control visibility and exit animation of "Waiting for Others..." pill
   const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(unconfirmedNearbyPhones.length > 0);
@@ -915,12 +920,12 @@ function Screen({
             };
 
             // Create layout entries for all icons (current + exiting)
-            const layoutEntries: LayoutEntry[] = Array.from(allIconIds).map(phoneId => {
-              const proximityData = nearbyWithinRange.find(data => data.phoneId === phoneId);
+            const layoutEntries: LayoutEntry[] = Array.from(allIconIds as Set<number>).map((phoneId: number) => {
+              const proximityDataEntry = nearbyWithinRange.find(data => data.phoneId === phoneId);
               const isExiting = exitingIconIds.has(phoneId);
               
               // For exiting icons, use last known position
-              if (!proximityData && isExiting) {
+              if (!proximityDataEntry && isExiting) {
                 const lastPos = lastKnownPositionsRef.current.get(phoneId);
                 const nearbyPhone = allBodies.find(b => b.id === phoneId);
                 const profileImage = nearbyPhone?.profileImage || imgContainer1;
@@ -938,9 +943,23 @@ function Screen({
                 };
               }
 
+              // If no proximity data and not exiting, skip (shouldn't happen but type safety)
+              if (!proximityDataEntry) {
+                const nearbyPhone = allBodies.find(b => b.id === phoneId);
+                const profileImage = nearbyPhone?.profileImage || imgContainer1;
+                return {
+                  phoneId,
+                  angleDeg: 0,
+                  notificationRadius: notificationMinDisplayRadius,
+                  fullViewRadius: fullViewMinDisplayRadius,
+                  fullViewSize: fullViewMinSize,
+                  profileImage,
+                };
+              }
+
               // Slightly non-linear scaling in notification view to push farther phones further out
               const notificationNormalized = Math.min(
-                Math.max(proximityData.distanceCm / notificationMaxRangeCm, 0),
+                Math.max(proximityDataEntry.distanceCm / notificationMaxRangeCm, 0),
                 1,
               );
               const notificationRadius =
@@ -950,12 +969,12 @@ function Screen({
 
               const fullViewRadius =
                 fullViewMinDisplayRadius +
-                (proximityData.distanceCm / fullViewMaxRangeCm) *
+                (proximityDataEntry.distanceCm / fullViewMaxRangeCm) *
                   (fullViewMaxDisplayRadius - fullViewMinDisplayRadius);
 
               const fullViewSize =
                 fullViewMaxSize -
-                (proximityData.distanceCm / fullViewMaxRangeCm) *
+                (proximityDataEntry.distanceCm / fullViewMaxRangeCm) *
                   (fullViewMaxSize - fullViewMinSize);
 
               const nearbyPhone = allBodies.find(b => b.id === phoneId);
@@ -963,7 +982,7 @@ function Screen({
 
               return {
                 phoneId,
-                angleDeg: proximityData.degrees,
+                angleDeg: proximityDataEntry.degrees,
                 notificationRadius,
                 fullViewRadius,
                 fullViewSize,
