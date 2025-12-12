@@ -30,12 +30,16 @@ export function DraggablePhone({
 }: DraggablePhoneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
+  const isRotatingRef = useRef(false);
   const activePointerIdRef = useRef<number | null>(null);
+  const rotationCornerRef = useRef<'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | null>(null);
   
   // Store initial positions for smooth delta-based dragging
   const initialPointerWorldRef = useRef({ x: 0, y: 0 });
   const initialPhonePosRef = useRef({ x: 0, y: 0 });
   const initialRotationRef = useRef(0);
+  const initialRotationCenterRef = useRef({ x: 0, y: 0 });
+  const initialAngleRelativeRef = useRef(0); // Initial angle relative to phone rotation
   
   // Use refs to track live position during drag (avoid re-renders)
   const livePosRef = useRef({ x: 0, y: 0 });
@@ -107,7 +111,7 @@ export function DraggablePhone({
     [zoom],
   );
 
-  // Handle drag via the handle using pointer events
+  // Handle drag via the dot handle using pointer events (movement only, no rotation)
   const handleHandlePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -121,6 +125,7 @@ export function DraggablePhone({
     }
 
     isDraggingRef.current = true;
+    isRotatingRef.current = false;
     body.isDragging = true;
 
     // Convert screen coordinates to world coordinates
@@ -140,6 +145,55 @@ export function DraggablePhone({
     lastMoveTimeRef.current = Date.now();
     lastPointerPosRef.current = { x: world.x, y: world.y };
     velocityRef.current = { x: 0, y: 0 };
+
+    // Reset velocities
+    body.vx = 0;
+    body.vy = 0;
+    body.angularVelocity = 0;
+  }, [body, screenToWorld]);
+
+  // Handle rotation via corner arrows - rotates around phone center
+  const handleCornerRotationDown = useCallback((e: React.PointerEvent, corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right') => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const pointerId = e.pointerId;
+    activePointerIdRef.current = pointerId;
+    rotationCornerRef.current = corner;
+    
+    // Set pointer capture
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.setPointerCapture(pointerId);
+    }
+
+    isRotatingRef.current = true;
+    isDraggingRef.current = false;
+    body.isDragging = true;
+
+    // Convert screen coordinates to world coordinates
+    const world = screenToWorld(e.clientX, e.clientY);
+
+    // Rotation center is the phone's center (not the corner)
+    const phoneCenterX = body.x;
+    const phoneCenterY = body.y;
+    initialRotationCenterRef.current = { x: phoneCenterX, y: phoneCenterY };
+
+    // Calculate initial angle from phone center to pointer position
+    const initialAngle = Math.atan2(
+      world.y - phoneCenterY,
+      world.x - phoneCenterX
+    );
+
+    // Store initial angle (absolute, not relative)
+    initialRotationRef.current = body.rotation;
+    initialAngleRelativeRef.current = initialAngle; // Store absolute initial angle
+    
+    // Store initial pointer position and phone state
+    initialPointerWorldRef.current = { x: world.x, y: world.y };
+    initialPhonePosRef.current = { x: body.x, y: body.y };
+    
+    livePosRef.current = { x: body.x, y: body.y };
+    liveRotationRef.current = body.rotation;
 
     // Reset velocities
     body.vx = 0;
@@ -207,9 +261,9 @@ export function DraggablePhone({
     const element = containerRef.current;
     if (!element) return;
 
-    // Global pointer move handler - uses delta-based movement
+    // Global pointer move handler - handles both movement and rotation
     const handleGlobalPointerMove = (e: PointerEvent) => {
-      if (!isDraggingRef.current) return;
+      if (!isDraggingRef.current && !isRotatingRef.current) return;
       if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
 
       e.preventDefault();
@@ -217,71 +271,87 @@ export function DraggablePhone({
       // Convert screen to world coordinates
       const world = screenToWorld(e.clientX, e.clientY);
       
-      // Calculate delta from initial pointer position
-      const deltaX = world.x - initialPointerWorldRef.current.x;
-      const deltaY = world.y - initialPointerWorldRef.current.y;
-      
-      // Apply delta to initial phone position
-      // Phone leads from the top (handle position), so movement is direct
-      const newX = initialPhonePosRef.current.x + deltaX;
-      const newY = initialPhonePosRef.current.y + deltaY;
-      
-      // Calculate velocity for follow-through effect
-      const now = Date.now();
-      const dt = Math.max((now - lastMoveTimeRef.current) / 1000, 0.001);
-      const pointerDeltaX = world.x - lastPointerPosRef.current.x;
-      const pointerDeltaY = world.y - lastPointerPosRef.current.y;
-      
-      // Smooth velocity calculation (exponential moving average)
-      const alpha = 0.3; // Smoothing factor
-      velocityRef.current.x = velocityRef.current.x * (1 - alpha) + (pointerDeltaX / dt) * alpha;
-      velocityRef.current.y = velocityRef.current.y * (1 - alpha) + (pointerDeltaY / dt) * alpha;
-      
-      // Calculate rotation based on movement direction for natural follow-through
-      // Top leads, bottom follows - phone tilts in direction of movement
-      const movementDistance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-      const velocityMagnitude = Math.sqrt(velocityRef.current.x * velocityRef.current.x + velocityRef.current.y * velocityRef.current.y);
-      
-      let targetRotation = initialRotationRef.current;
-      
-      if (movementDistance > 5 && velocityMagnitude > 10) {
-        // Calculate movement direction
-        const movementAngle = Math.atan2(deltaY, deltaX);
+      if (isRotatingRef.current && rotationCornerRef.current) {
+        // Rotation mode: rotate around phone center
+        const center = initialRotationCenterRef.current;
         
-        // For natural follow-through: phone tilts perpendicular to movement direction
-        // When moving right, phone tilts slightly clockwise (positive rotation)
-        // When moving left, phone tilts slightly counter-clockwise (negative rotation)
-        // Rotation is based on horizontal component of movement
-        const horizontalComponent = Math.cos(movementAngle);
+        // Calculate current angle from phone center to pointer position
+        const currentAngle = Math.atan2(
+          world.y - center.y,
+          world.x - center.x
+        );
         
-        // Scale rotation based on velocity (stronger movement = more tilt)
-        // Max rotation ~0.15 radians (~8.6 degrees) for strong movements
-        const rotationScale = Math.min(velocityMagnitude / 300, 1);
-        const maxRotation = 0.15;
-        targetRotation = initialRotationRef.current + horizontalComponent * maxRotation * rotationScale;
+        // Calculate rotation delta: how much the pointer has moved around the center
+        // This is simply the difference in absolute angles
+        let angleDelta = currentAngle - initialAngleRelativeRef.current;
         
-        // Normalize rotation
-        while (targetRotation > Math.PI) targetRotation -= Math.PI * 2;
-        while (targetRotation < -Math.PI) targetRotation += Math.PI * 2;
+        // Normalize angle delta to [-PI, PI] for shortest rotation path
+        while (angleDelta > Math.PI) angleDelta -= Math.PI * 2;
+        while (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
+        
+        // Direct tracking: corner leads the rotation by following pointer exactly
+        // No dampening for immediate, responsive feel - corner pulls the phone
+        // The corner moves first, phone follows naturally
+        const followFactor = 1.0; // Direct 1:1 tracking - corner leads immediately
+        angleDelta *= followFactor;
+        
+        // Calculate new rotation
+        const newRotation = initialRotationRef.current + angleDelta;
+        
+        // Normalize rotation to [-PI, PI]
+        let normalizedRotation = newRotation;
+        while (normalizedRotation > Math.PI) normalizedRotation -= Math.PI * 2;
+        while (normalizedRotation < -Math.PI) normalizedRotation += Math.PI * 2;
+        
+        // Phone position stays the same (rotating around center)
+        const newX = initialPhonePosRef.current.x;
+        const newY = initialPhonePosRef.current.y;
+        
+        updatePhoneTransform(newX, newY, normalizedRotation);
+      } else if (isDraggingRef.current) {
+        // Movement mode: move phone without rotation
+        const deltaX = world.x - initialPointerWorldRef.current.x;
+        const deltaY = world.y - initialPointerWorldRef.current.y;
+        
+        // Apply delta to initial phone position
+        const newX = initialPhonePosRef.current.x + deltaX;
+        const newY = initialPhonePosRef.current.y + deltaY;
+        
+        // Calculate velocity for follow-through effect
+        const now = Date.now();
+        const dt = Math.max((now - lastMoveTimeRef.current) / 1000, 0.001);
+        const pointerDeltaX = world.x - lastPointerPosRef.current.x;
+        const pointerDeltaY = world.y - lastPointerPosRef.current.y;
+        
+        // Smooth velocity calculation (exponential moving average)
+        const alpha = 0.3;
+        velocityRef.current.x = velocityRef.current.x * (1 - alpha) + (pointerDeltaX / dt) * alpha;
+        velocityRef.current.y = velocityRef.current.y * (1 - alpha) + (pointerDeltaY / dt) * alpha;
+        
+        // Keep rotation unchanged when dragging dot handle
+        const targetRotation = initialRotationRef.current;
+        
+        // Update position and rotation
+        updatePhoneTransform(newX, newY, targetRotation);
+        
+        // Update tracking refs
+        lastPointerPosRef.current = { x: world.x, y: world.y };
+        lastMoveTimeRef.current = now;
+        lastMovePosRef.current = { x: newX, y: newY };
       }
-      
-      // Update position and rotation
-      updatePhoneTransform(newX, newY, targetRotation);
-      
-      // Update tracking refs
-      lastPointerPosRef.current = { x: world.x, y: world.y };
-      lastMoveTimeRef.current = now;
-      
-      // Track position for velocity calculation on release
-      lastMovePosRef.current = { x: newX, y: newY };
     };
     
     const handleGlobalPointerUp = (e: PointerEvent) => {
       if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
       
-      if (isDraggingRef.current) {
+      const wasDragging = isDraggingRef.current;
+      const wasRotating = isRotatingRef.current;
+      
+      if (wasDragging || wasRotating) {
         isDraggingRef.current = false;
+        isRotatingRef.current = false;
         body.isDragging = false;
+        rotationCornerRef.current = null;
         activePointerIdRef.current = null;
         
         // Release pointer capture
@@ -289,26 +359,34 @@ export function DraggablePhone({
           e.target.releasePointerCapture(e.pointerId);
         }
         
-        // Calculate final velocity from last movement
-        const now = Date.now();
-        const dt = (now - lastMoveTimeRef.current) / 1000;
-        if (dt > 0 && dt < 0.1) {
-          body.vx = (livePosRef.current.x - lastMovePosRef.current.x) / dt;
-          body.vy = (livePosRef.current.y - lastMovePosRef.current.y) / dt;
+        if (wasDragging) {
+          // Calculate final velocity from last movement (only for movement, not rotation)
+          const now = Date.now();
+          const dt = (now - lastMoveTimeRef.current) / 1000;
+          if (dt > 0 && dt < 0.1) {
+            body.vx = (livePosRef.current.x - lastMovePosRef.current.x) / dt;
+            body.vy = (livePosRef.current.y - lastMovePosRef.current.y) / dt;
+          }
+          
+          // Apply momentum damping
+          const scale = 0.3;
+          body.vx *= scale;
+          body.vy *= scale;
+        } else {
+          // Reset velocities for rotation
+          body.vx = 0;
+          body.vy = 0;
         }
-        
-        // Apply momentum damping
-        const scale = 0.3;
-        body.vx *= scale;
-        body.vy *= scale;
         
         // Sync final position
         body.x = livePosRef.current.x;
         body.y = livePosRef.current.y;
         body.rotation = liveRotationRef.current;
         
-        // Start auto-alignment animation to face forward
-        realignPhone();
+        // Start auto-alignment animation to face forward (only after movement, not rotation)
+        if (wasDragging) {
+          realignPhone();
+        }
       }
     };
     
@@ -359,51 +437,197 @@ export function DraggablePhone({
         pointerEvents: 'none',
       }}
     >
-      {/* Drag handle positioned above phone, outside bezel */}
+      {/* Six-dot drag handle positioned above phone, outside bezel */}
       <div
         onPointerDown={handleHandlePointerDown}
         className="absolute left-1/2 -translate-x-1/2 cursor-grab active:cursor-grabbing"
         data-name="DragHandle"
         style={{
-          width: '56px',
-          height: '56px',
+          width: '48px',
+          height: '32px',
           pointerEvents: 'auto',
           touchAction: 'none',
           userSelect: 'none',
           zIndex: 10000,
-          top: '-98px', // Position above the bezel with ~24px gap (bezel extends to -17.76px, handle is 56px tall, so handle bottom at -42px, gap = 24px)
+          top: '-72px', // Position above the bezel with noticeable gap
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '6px',
+        }}
+      >
+        {/* Top row of three dots */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#5a5a5a' }} />
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#5a5a5a' }} />
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#5a5a5a' }} />
+        </div>
+        {/* Bottom row of three dots */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#5a5a5a' }} />
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#5a5a5a' }} />
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#5a5a5a' }} />
+        </div>
+      </div>
+
+      {/* Corner rotation arrows */}
+      {/* Top-left corner - counter-clockwise */}
+      <div
+        onPointerDown={(e) => handleCornerRotationDown(e, 'top-left')}
+        className="absolute cursor-grab active:cursor-grabbing"
+        data-name="RotationHandle-TopLeft"
+        style={{
+          left: '-28px',
+          top: '-28px',
+          width: '28px',
+          height: '28px',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          userSelect: 'none',
+          zIndex: 10000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
         }}
       >
-        <svg
-          width="56"
-          height="56"
-          viewBox="0 0 28 28"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          preserveAspectRatio="xMidYMid meet"
-        >
-          {/* Up arrow */}
+        <svg width="24" height="24" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+          {/* Curved arrow arc */}
           <path
-            d="M14 4L9 9H11V13H17V9H19L14 4Z"
-            fill="rgba(70, 70, 70, 0.85)"
+            d="M4 4 Q9 1 14 4"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
           />
-          {/* Down arrow */}
+          {/* Arrowhead */}
           <path
-            d="M14 24L19 19H17V15H11V19H9L14 24Z"
-            fill="rgba(70, 70, 70, 0.85)"
+            d="M6 2 L4 4 L7 4"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           />
-          {/* Left arrow */}
+        </svg>
+      </div>
+
+      {/* Top-right corner - clockwise */}
+      <div
+        onPointerDown={(e) => handleCornerRotationDown(e, 'top-right')}
+        className="absolute cursor-grab active:cursor-grabbing"
+        data-name="RotationHandle-TopRight"
+        style={{
+          right: '-28px',
+          top: '-28px',
+          width: '28px',
+          height: '28px',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          userSelect: 'none',
+          zIndex: 10000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg width="24" height="24" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+          {/* Curved arrow arc */}
           <path
-            d="M4 14L9 9V11H13V17H9V19L4 14Z"
-            fill="rgba(70, 70, 70, 0.85)"
+            d="M14 4 Q9 1 4 4"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
           />
-          {/* Right arrow */}
+          {/* Arrowhead */}
           <path
-            d="M24 14L19 19V17H15V11H19V9L24 14Z"
-            fill="rgba(70, 70, 70, 0.85)"
+            d="M12 2 L14 4 L11 4"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+
+      {/* Bottom-left corner - clockwise */}
+      <div
+        onPointerDown={(e) => handleCornerRotationDown(e, 'bottom-left')}
+        className="absolute cursor-grab active:cursor-grabbing"
+        data-name="RotationHandle-BottomLeft"
+        style={{
+          left: '-28px',
+          bottom: '-28px',
+          width: '28px',
+          height: '28px',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          userSelect: 'none',
+          zIndex: 10000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg width="24" height="24" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+          {/* Curved arrow arc */}
+          <path
+            d="M4 14 Q9 17 14 14"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
+          />
+          {/* Arrowhead */}
+          <path
+            d="M6 16 L4 14 L7 14"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+
+      {/* Bottom-right corner - counter-clockwise */}
+      <div
+        onPointerDown={(e) => handleCornerRotationDown(e, 'bottom-right')}
+        className="absolute cursor-grab active:cursor-grabbing"
+        data-name="RotationHandle-BottomRight"
+        style={{
+          right: '-28px',
+          bottom: '-28px',
+          width: '28px',
+          height: '28px',
+          pointerEvents: 'auto',
+          touchAction: 'none',
+          userSelect: 'none',
+          zIndex: 10000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg width="24" height="24" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+          {/* Curved arrow arc */}
+          <path
+            d="M14 14 Q9 17 4 14"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
+          />
+          {/* Arrowhead */}
+          <path
+            d="M12 16 L14 14 L11 14"
+            stroke="#555555"
+            strokeWidth="2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           />
         </svg>
       </div>
