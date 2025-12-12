@@ -26,7 +26,7 @@ type Tool = 'move' | 'interact';
 // Group types
 interface PotentialGroup {
   id: string; // Unique identifier for the group
-  memberIds: Set<number>; // Phone IDs in this potential group
+  memberIds: Set<number>; // Phone IDs in this potential group (all phones in proximity)
   confirmedIds: Set<number>; // Phone IDs that have confirmed
   representativePhoneId?: number; // Phone ID that is representing an existing group (for debugging)
   representativeGroupId?: string; // Group ID that this potential group represents (for debugging)
@@ -138,9 +138,8 @@ function Bezel() {
 export default function Desktop() {
   const [phones, setPhones] = useState(1);
   const [, forceUpdate] = useState(0);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.5);
   const [tool, setTool] = useState<Tool>('interact');
-  const [confirmedPhones, setConfirmedPhones] = useState<Set<number>>(new Set());
   const [groupSearchOpenPhones, setGroupSearchOpenPhones] = useState<Set<number>>(new Set());
   const [potentialGroups, setPotentialGroups] = useState<Map<string, PotentialGroup>>(new Map());
   const [confirmedGroups, setConfirmedGroups] = useState<Map<string, ConfirmedGroup>>(new Map());
@@ -232,7 +231,7 @@ export default function Desktop() {
   }, [panX, panY]);
   
   // Physics bodies
-  const nextIdRef = useRef(3);
+  const nextIdRef = useRef(4);
   const canvasRef = useRef<HTMLDivElement>(null);
   const pinchStartRef = useRef({ distance: 0, zoom: 1 });
   const lastTimeRef = useRef(Date.now());
@@ -265,7 +264,7 @@ export default function Desktop() {
     };
   }, []);
 
-  // Initialize default phones (2 phones)
+  // Initialize default phones (3 phones)
   useEffect(() => {
     if (bodiesRef.current.length === 0) {
       const viewportWidth = window.innerWidth / zoom;
@@ -274,11 +273,15 @@ export default function Desktop() {
       // Get name+image pairs for initial phones
       const pair1 = shuffledPairs[0 % shuffledPairs.length];
       const pair2 = shuffledPairs[1 % shuffledPairs.length];
+      const pair3 = shuffledPairs[2 % shuffledPairs.length];
       
-      // First phone - centered
+      // Gap between phones
+      const gap = 100;
+      
+      // First phone - offset to the left
       const initialBody1: RigidBody = {
         id: 1,
-        x: viewportWidth / 2 - phoneWidth / 2 - 200,
+        x: viewportWidth / 2 - phoneWidth / 2 - (phoneWidth + gap),
         y: viewportHeight / 2 - phoneHeight / 2,
         rotation: 0, // Default orientation (0 = upright, Math.PI/2 = 90° clockwise, -Math.PI/2 = 90° counter-clockwise)
         vx: 0,
@@ -295,10 +298,10 @@ export default function Desktop() {
         name: pair1.name
       };
       
-      // Second phone - offset to the right
+      // Second phone - centered
       const initialBody2: RigidBody = {
         id: 2,
-        x: viewportWidth / 2 - phoneWidth / 2 + 200,
+        x: viewportWidth / 2 - phoneWidth / 2,
         y: viewportHeight / 2 - phoneHeight / 2,
         rotation: 0, // Default orientation (0 = upright, Math.PI/2 = 90° clockwise, -Math.PI/2 = 90° counter-clockwise)
         vx: 0,
@@ -315,8 +318,29 @@ export default function Desktop() {
         name: pair2.name
       };
       
+      // Third phone - offset to the right
+      const initialBody3: RigidBody = {
+        id: 3,
+        x: viewportWidth / 2 - phoneWidth / 2 + (phoneWidth + gap),
+        y: viewportHeight / 2 - phoneHeight / 2,
+        rotation: 0, // Default orientation (0 = upright, Math.PI/2 = 90° clockwise, -Math.PI/2 = 90° counter-clockwise)
+        vx: 0,
+        vy: 0,
+        angularVelocity: 0,
+        mass: 1,
+        momentOfInertia: calculateMomentOfInertia(1, phoneWidth, phoneHeight),
+        restitution: 0.5,
+        friction: 0.4,
+        width: phoneWidth,
+        height: phoneHeight,
+        isDragging: false,
+        profileImage: pair3.image,
+        name: pair3.name
+      };
+      
       bodiesRef.current.push(initialBody1);
       bodiesRef.current.push(initialBody2);
+      bodiesRef.current.push(initialBody3);
       forceUpdate(prev => prev + 1); // Force re-render after adding initial phones
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -684,12 +708,6 @@ export default function Desktop() {
   
   // Handle phone confirmation
   const handleConfirm = (phoneId: number) => {
-    setConfirmedPhones(prev => {
-      const next = new Set(prev);
-      next.add(phoneId);
-      return next;
-    });
-    
     // Add to confirmedIds in potential groups that contain this phone
     setPotentialGroups(prev => {
       const next = new Map(prev);
@@ -712,12 +730,6 @@ export default function Desktop() {
     if (phonesInConfirmedGroups.has(phoneId)) {
       return; // Cannot unconfirm from confirmed groups
     }
-    
-    setConfirmedPhones(prev => {
-      const next = new Set(prev);
-      next.delete(phoneId);
-      return next;
-    });
     
     // Remove from confirmedIds in potential groups
     setPotentialGroups(prev => {
@@ -1202,15 +1214,10 @@ export default function Desktop() {
                 id => representativeGroup.memberIds.has(id)
               );
               
-              // Skip creating potential group if all members are already in the confirmed group
-              // (this prevents recreating potential groups after they've been confirmed and merged)
-              const allMembersAlreadyInGroup = proximityMembers.every(id => representativeGroup.memberIds.has(id));
-              if (allMembersAlreadyInGroup) {
-                continue; // Skip - all members already confirmed in this group
-              }
-              
-              // Only create potential group if there are new members OR if representative is in proximity
-              if (newMembers.length > 0 || existingMembersInProximity.includes(representativePhoneId!)) {
+              // Only create potential group if there are new members to add
+              // This prevents creating representative groups when everyone is already in the group
+              // (e.g., A and B from group 1 trying to form a group - they're both already in it, so no new members)
+              if (newMembers.length > 0) {
                 const combinedMembers = new Set<number>(proximityMembers);
                 
                 // Preserve confirmed IDs from existing group if converting from regular to representative
@@ -1395,85 +1402,72 @@ export default function Desktop() {
     });
   };
 
-  // Check if all members of a potential group have confirmed, then move to confirmed groups
+  // Check if all members in potential groups have confirmed, then move to confirmed groups
+  // Only check groups where all members have search screen open
   useEffect(() => {
     potentialGroups.forEach((group, groupId) => {
-      // Check if this is a representative group by checking the representativeGroupId property
-      // (not just the ID prefix, since existing groups can be converted to representative groups)
-      const isRepresentativeGroup = !!(group.representativeGroupId && group.representativePhoneId !== undefined);
+      // Filter to only members who have the search screen open
+      const membersWithSearchOpen = Array.from(group.memberIds).filter(
+        (id): id is number => groupSearchOpenPhones.has(id)
+      );
       
-      let allConfirmed = false;
-      
-      if (isRepresentativeGroup && group.representativeGroupId && group.representativePhoneId !== undefined) {
-        // For representative groups, only check if representative and new members have confirmed
-        // Existing group members don't need to confirm again
-        const representativeGroup = confirmedGroupsRef.current.get(group.representativeGroupId);
-        if (representativeGroup) {
-          // For representative groups, only phones currently in proximity need to confirm
-          // All phones in the potential group are in proximity, so they all need to confirm
-          // (The potential group only contains phones in proximity, not all group members)
-          const membersWhoNeedToConfirm = Array.from(group.memberIds);
-          
-          // Check if all members currently in proximity have confirmed
-          allConfirmed = membersWhoNeedToConfirm.length > 0 && 
-                        membersWhoNeedToConfirm.every(id => group.confirmedIds.has(id));
-        } else {
-          // Fallback: check all members if we can't find the representative group
-          allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
-        }
-      } else {
-        // For normal groups, all members need to confirm
-        allConfirmed = Array.from(group.memberIds).every(id => group.confirmedIds.has(id));
+      // Only check groups where at least 2 members have search screen open
+      if (membersWithSearchOpen.length < 2) {
+        return;
       }
       
-      if (allConfirmed && group.memberIds.size >= 2) {
-        if (isRepresentativeGroup) {
-          // Use the representativeGroupId from the group object (more reliable than parsing ID)
-          const representativeGroupId = group.representativeGroupId;
+      // Check if all members with search screen open have confirmed
+      const allConfirmed = membersWithSearchOpen.every(id => group.confirmedIds.has(id));
+      
+      // Require at least 2 members, and all of them must have confirmed
+      if (allConfirmed && membersWithSearchOpen.length >= 2) {
+        // Check if this is a representative group by checking the representativeGroupId property
+        const isRepresentativeGroup = !!(group.representativeGroupId && group.representativePhoneId !== undefined);
+        
+        if (isRepresentativeGroup && group.representativeGroupId) {
+          const representativeGroup = confirmedGroupsRef.current.get(group.representativeGroupId);
           
-          if (representativeGroupId) {
-            const representativeGroup = confirmedGroupsRef.current.get(representativeGroupId);
+          if (representativeGroup) {
+            // Find new members (those not already in the representative group)
+            const newMembers = membersWithSearchOpen.filter(
+              id => !representativeGroup.memberIds.has(id)
+            );
             
-            if (representativeGroup) {
-              // Find new members (those not already in the representative group)
-              const newMembers = Array.from(group.memberIds).filter(
-                id => !representativeGroup.memberIds.has(id)
-              );
+            // Merge new members into the existing confirmed group
+            if (newMembers.length > 0) {
+              // Mark the new combination (all members including new ones) as seen
+              const allMembers = Array.from(representativeGroup.memberIds);
+              newMembers.forEach(id => allMembers.push(id));
+              const memberArray = allMembers.sort((a, b) => a - b);
+              const combinationKey = memberArray.join(',');
+              seenGroupCombinationsRef.current.add(combinationKey);
               
-              // Merge new members into the existing confirmed group
-              if (newMembers.length > 0) {
-                // Mark the new combination (all members including new ones) as seen
-                const allMembers = Array.from(representativeGroup.memberIds);
-                newMembers.forEach(id => allMembers.push(id));
-                const memberArray = allMembers.sort((a, b) => a - b);
-                const combinationKey = memberArray.join(',');
-                seenGroupCombinationsRef.current.add(combinationKey);
-                
-                setConfirmedGroups(prev => {
-                  const next = new Map(prev);
-                  const updatedGroup = next.get(representativeGroupId);
-                  if (updatedGroup) {
-                    const newMemberIds = new Set(updatedGroup.memberIds);
-                    newMembers.forEach(id => newMemberIds.add(id));
-                    next.set(representativeGroupId, {
-                      ...updatedGroup,
-                      memberIds: newMemberIds,
-                    });
-                  }
-                  return next;
-                });
-                console.log(`Merged ${newMembers.length} confirmed members into representative group ${representativeGroupId}`);
-              }
-              
-              // Remove from potential groups
-              setPotentialGroups(prev => {
+              setConfirmedGroups(prev => {
                 const next = new Map(prev);
-                next.delete(groupId);
+                const updatedGroup = next.get(group.representativeGroupId!);
+                if (updatedGroup) {
+                  const newMemberIds = new Set(updatedGroup.memberIds);
+                  newMembers.forEach(id => newMemberIds.add(id));
+                  next.set(group.representativeGroupId!, {
+                    ...updatedGroup,
+                    memberIds: newMemberIds,
+                  });
+                }
                 return next;
               });
-              
-              return; // Skip normal confirmed group creation
+              console.log(`Merged ${newMembers.length} confirmed members into representative group ${group.representativeGroupId}`);
             }
+            
+            // Remove phones from groupSearchOpenPhones since the group is now confirmed
+            setGroupSearchOpenPhones(prev => {
+              const next = new Set(prev);
+              membersWithSearchOpen.forEach(phoneId => {
+                next.delete(phoneId);
+              });
+              return next;
+            });
+            
+            return; // Skip normal confirmed group creation
           }
         }
         
@@ -1481,29 +1475,36 @@ export default function Desktop() {
         const confirmedGroupId = String(nextConfirmedGroupIdRef.current++);
         
         // Mark this combination as seen (so it won't show as "new" again)
-        const memberArray = Array.from(group.memberIds).sort((a, b) => a - b);
+        const memberArray = membersWithSearchOpen.sort((a, b) => a - b);
         const combinationKey = memberArray.join(',');
         seenGroupCombinationsRef.current.add(combinationKey);
+        
+        console.log(`Creating confirmed group ${confirmedGroupId} from potential group ${groupId}:`, {
+          memberIds: membersWithSearchOpen,
+          combinationKey
+        });
         
         // Move to confirmed groups with new sequential ID
         setConfirmedGroups(prev => {
           const next = new Map(prev);
           next.set(confirmedGroupId, {
             id: confirmedGroupId,
-            memberIds: new Set(group.memberIds),
+            memberIds: new Set(membersWithSearchOpen),
           });
           return next;
         });
         
-        // Remove from potential groups
-        setPotentialGroups(prev => {
-          const next = new Map(prev);
-          next.delete(groupId);
+        // Remove phones from groupSearchOpenPhones since the group is now confirmed
+        setGroupSearchOpenPhones(prev => {
+          const next = new Set(prev);
+          membersWithSearchOpen.forEach(phoneId => {
+            next.delete(phoneId);
+          });
           return next;
         });
       }
     });
-  }, [potentialGroups]);
+  }, [potentialGroups, groupSearchOpenPhones]);
 
     // Calculate proximity data for a specific phone
   const calculateProximityData = (body: RigidBody): ProximityData[] => {
@@ -1806,56 +1807,6 @@ export default function Desktop() {
                   </div>
                 )}
               </div>
-              
-              {/* Individual Confirmed Phones */}
-              <div>
-                <h4 className="font-semibold text-base text-gray-900 mb-3">
-                  Confirmed Phones
-                  <span className="ml-2 font-normal text-sm text-gray-500">({confirmedPhones.size})</span>
-                </h4>
-                {confirmedPhones.size === 0 ? (
-                  <p className="text-sm text-gray-400">No confirmed phones</p>
-                ) : (
-                  <div className="text-sm text-gray-700">
-                    {Array.from(confirmedPhones).join(', ')}
-                  </div>
-                )}
-              </div>
-              
-              {/* Recently Removed Phones */}
-              <div>
-                <h4 className="font-semibold text-base text-gray-900 mb-3">
-                  Recently Removed Phones
-                  <span className="ml-2 font-normal text-sm text-gray-500">({recentlyRemovedPhones.size})</span>
-                </h4>
-                {recentlyRemovedPhones.size === 0 ? (
-                  <p className="text-sm text-gray-400">No recently removed phones</p>
-                ) : (
-                  <div className="bg-red-50 border border-red-300 rounded-md p-3">
-                    <div className="text-sm text-gray-700 space-y-1">
-                      <div><span className="font-medium">Phone IDs:</span> {Array.from(recentlyRemovedPhones).join(', ')}</div>
-                      {Array.from(recentlyRemovedPhones).map(phoneId => {
-                        const phone = bodiesRef.current.find(b => b.id === phoneId);
-                        if (phone) {
-                          const proximityData = calculateProximityData(phone);
-                          const hasNearby = proximityData.some(data => data.distanceCm <= 6.5);
-                          const nearestDistance = proximityData.length > 0 
-                            ? Math.min(...proximityData.map(d => d.distanceCm)).toFixed(2)
-                            : 'N/A';
-                          return (
-                            <div key={phoneId} className="mt-2 pt-2 border-t border-red-200 text-xs">
-                              <div><span className="font-medium">Phone {phoneId}:</span></div>
-                              <div className="ml-2">Has nearby (≤6.5cm): {hasNearby ? 'Yes' : 'No'}</div>
-                              <div className="ml-2">Nearest distance: {nearestDistance}cm</div>
-                            </div>
-                          );
-                        }
-                        return null;
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
           </div>
         </div>
@@ -1936,7 +1887,6 @@ export default function Desktop() {
                 allBodies={bodiesRef.current}
                 onConfirm={handleConfirm}
                 onUnconfirm={handleUnconfirm}
-                confirmedPhones={confirmedPhones}
                 groupSearchOpenPhones={groupSearchOpenPhones}
                 onGroupSearchStateChange={handleGroupSearchStateChange}
                 confirmedGroups={confirmedGroups}

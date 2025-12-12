@@ -1883,6 +1883,15 @@
   }
 }
 
+@keyframes checkmarkGrow {
+  0% {
+    transform: scale(0);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 :root {
   --font-size: 16px;
   --background: #fff;

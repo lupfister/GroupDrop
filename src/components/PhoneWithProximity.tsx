@@ -33,11 +33,10 @@ interface PhoneWithProximityProps {
   allBodies: RigidBody[]; // Added to map phoneId to profile images
   onConfirm?: (phoneId: number) => void; // Callback when user confirms
   onUnconfirm?: (phoneId: number) => void; // Callback when user cancels confirmation
-  confirmedPhones?: Set<number>; // Set of confirmed phone IDs
   groupSearchOpenPhones?: Set<number>; // Phones currently in GroupSearch state
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
   confirmedGroups?: Map<string, ConfirmedGroup>; // Confirmed groups to get all members when group is confirmed
-  potentialGroups?: Map<string, PotentialGroup>; // Potential groups to get unconfirmed members
+  potentialGroups?: Map<string, PotentialGroup>; // Potential groups (all phones in proximity)
   onStateChange?: (viewState: 'homeScreen' | 'groupSearch' | 'groupConfirm' | 'groupsHistory', swipeOffset: number) => void;
   onRemoveUser?: (removerPhoneId: number, targetPhoneId: number) => void; // Callback to remove a user from potential group
   isRecentlyRemoved?: boolean; // Flag to suppress notifications for recently removed users
@@ -172,7 +171,6 @@ function Screen({
   allBodies,
   onConfirm,
   onUnconfirm,
-  confirmedPhones,
   groupSearchOpenPhones,
   onGroupSearchStateChange,
   confirmedGroups,
@@ -191,7 +189,6 @@ function Screen({
   allBodies: RigidBody[];
   onConfirm?: (phoneId: number) => void;
   onUnconfirm?: (phoneId: number) => void;
-  confirmedPhones?: Set<number>;
   groupSearchOpenPhones?: Set<number>;
   onGroupSearchStateChange?: (phoneId: number, isInGroupSearch: boolean) => void;
   confirmedGroups?: Map<string, ConfirmedGroup>;
@@ -295,7 +292,13 @@ function Screen({
       setActiveGroupId(groupId || null);
     }
     if (onGroupSearchStateChange) {
-      onGroupSearchStateChange(body.id, nextState === 'groupSearch');
+      // Keep phone in groupSearchOpenPhones if they're in groupSearch OR groupConfirm
+      // Only remove when going to homeScreen or groupsHistory
+      // This ensures planned groups don't lose members when they confirm and move to groupConfirm state
+      // Allow phones to re-enter groupSearchOpenPhones even if they're in a confirmed group
+      // (they can form new planned groups with other people)
+      const shouldBeInGroupSearch = nextState === 'groupSearch' || nextState === 'groupConfirm';
+      onGroupSearchStateChange(body.id, shouldBeInGroupSearch);
     }
     // Notify parent of state changes
     if (onStateChange) {
@@ -446,6 +449,30 @@ function Screen({
   const handleNotificationClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     console.log('Expanding notification to full view');
+    
+    // If opening from a confirmed group screen, enable representative system by default
+    // This allows phones to automatically represent their confirmed group when opening notifications
+    // BUT only if there's at least one nearby person NOT already in the group
+    if (viewState === 'groupConfirm' && activeGroupId && onRepresentativeGroupChange) {
+      // Check if the activeGroupId is a valid confirmed group that this phone belongs to
+      const activeGroup = confirmedGroups?.get(activeGroupId);
+      if (activeGroup && activeGroup.memberIds.has(body.id)) {
+        // Get nearby phone IDs
+        const nearbyPhoneIds = proximityData
+          .filter(data => data.distanceCm <= 8.5)
+          .filter(data => !recentlyRemovedPhones?.has(data.phoneId))
+          .map(data => data.phoneId)
+          .slice(0, 4);
+        
+        // Only auto-enable if there's at least one nearby person NOT already in the group
+        const hasNewPersonToAdd = nearbyPhoneIds.some(phoneId => !activeGroup.memberIds.has(phoneId));
+        if (hasNewPersonToAdd) {
+          // Automatically set the representative group to the confirmed group being viewed
+          // This enables the representative system by default when opening from a confirmed group screen
+          onRepresentativeGroupChange(body.id, activeGroupId);
+        }
+      }
+    }
     
     // Open GroupSearch state - use potential group ID if available
     const currentPotentialGroup = potentialGroups 
@@ -676,8 +703,6 @@ function Screen({
     if (isTransitioning || tool !== 'interact' || viewState !== 'groupSearch') return;
     // Don't allow removing yourself
     if (targetUserId === body.id) return;
-    // Don't allow removing confirmed users
-    if (confirmedPhones?.has(targetUserId)) return;
     
     e.stopPropagation();
     e.preventDefault();
@@ -760,8 +785,16 @@ function Screen({
     .map(data => allBodies.find(b => b.id === data.phoneId))
     .filter((phone): phone is RigidBody => phone !== undefined);
   
-  // Split into confirmed and unconfirmed
-  const confirmedNearbyPhones = nearbyPhones.filter(phone => confirmedPhones?.has(phone.id));
+  // Split into confirmed and unconfirmed (based on potential groups)
+  const confirmedNearbyPhones = nearbyPhones.filter(phone => {
+    if (!potentialGroups) return false;
+    for (const [groupId, potentialGroup] of potentialGroups) {
+      if (potentialGroup.memberIds.has(phone.id) && potentialGroup.confirmedIds.has(phone.id)) {
+        return true;
+      }
+    }
+    return false;
+  });
   
   // Find which confirmed group this phone belongs to (if any) - check this first
   const phoneConfirmedGroup = confirmedGroups 
@@ -874,13 +907,103 @@ function Screen({
   
   // Check if phone has confirmed in a potential group (new group being formed)
   const hasConfirmedInPotentialGroup = phonePotentialGroup && phonePotentialGroup.confirmedIds.has(body.id);
+  const hasConfirmedInGroup = hasConfirmedInPotentialGroup;
+  
+  // Check if there are nearby phones on confirmed group screens with other members
+  // This allows new phones to join existing confirmed groups via the representative system
+  const hasNearbyConfirmedGroupWithOthers = (() => {
+    if (!hasNearbyPhones || !confirmedGroups || confirmedGroups.size === 0) {
+      return false;
+    }
+    
+    // Get all nearby phone IDs (including indirect/daisy-chained)
+    const nearbyPhoneIds = new Set(
+      proximityData
+        .filter(data => isWithinProximityRange(data) && !recentlyRemovedPhones?.has(data.phoneId))
+        .map(data => data.phoneId)
+    );
+    
+    // Check each nearby phone to see if they're in a confirmed group with other members
+    for (const nearbyPhoneId of nearbyPhoneIds) {
+      // Find which confirmed group this nearby phone belongs to
+      const nearbyPhoneConfirmedGroup = Array.from(confirmedGroups.values()).find(group => 
+        group.memberIds.has(nearbyPhoneId)
+      );
+      
+      if (nearbyPhoneConfirmedGroup) {
+        // Check if this phone is NOT already in that confirmed group
+        if (!nearbyPhoneConfirmedGroup.memberIds.has(body.id)) {
+          // Check if the confirmed group has other members beyond just the nearby phone
+          // (i.e., there are members not in proximity with this phone)
+          const allGroupMembers = Array.from(nearbyPhoneConfirmedGroup.memberIds);
+          const hasOtherMembers = allGroupMembers.some(memberId => {
+            // Skip the nearby phone itself
+            if (memberId === nearbyPhoneId) return false;
+            // Skip this phone
+            if (memberId === body.id) return false;
+            // Check if this member is NOT in proximity (meaning they're elsewhere)
+            return !nearbyPhoneIds.has(memberId);
+          });
+          
+          if (hasOtherMembers) {
+            // Found a nearby phone in a confirmed group with other members
+            // This phone can join via the representative system
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
+  })();
+  
+  // Check if viewing a confirmed group screen with other members and there are new people nearby
+  // This allows Phone A (viewing confirmed group) to see notifications when Phone D comes nearby
+  const isViewingConfirmedGroupWithOthersAndNewPeople = (() => {
+    if (!isViewingConfirmedGroupScreen || !activeConfirmedGroup) {
+      return false;
+    }
+    
+    // Check if the confirmed group has other members (not just this phone)
+    const allGroupMembers = Array.from(activeConfirmedGroup.memberIds);
+    const hasOtherMembers = allGroupMembers.length > 1; // More than just this phone
+    
+    if (!hasOtherMembers) {
+      return false;
+    }
+    
+    // Check if there are nearby phones that are NOT in this confirmed group
+    const nearbyPhoneIds = new Set(
+      proximityData
+        .filter(data => isWithinProximityRange(data) && !recentlyRemovedPhones?.has(data.phoneId))
+        .map(data => data.phoneId)
+    );
+    
+    const hasNewPeopleNearby = Array.from(nearbyPhoneIds).some(
+      phoneId => !activeConfirmedGroup.memberIds.has(phoneId)
+    );
+    
+    return hasNewPeopleNearby;
+  })();
   
   // Check if there are new potential groups (different from the current one being confirmed)
   // A new potential group is one that:
   // 1. Contains this phone and is marked as a new unique combination (isNew: true), OR
   // 2. Contains this phone but is different from phonePotentialGroup, OR
   // 3. Contains phones that are NOT in the current potential/confirmed group
+  // 4. OR there are nearby phones on confirmed group screens with other members (for representative system)
+  // 5. OR this phone is viewing a confirmed group screen with other members and there are new people nearby
   const hasNewPotentialGroups = (() => {
+    // First check if viewing a confirmed group screen with others and new people nearby
+    if (isViewingConfirmedGroupWithOthersAndNewPeople) {
+      return true;
+    }
+    
+    // Check if there are nearby confirmed groups with other members (representative system)
+    if (hasNearbyConfirmedGroupWithOthers) {
+      return true;
+    }
+    
     if (!potentialGroups || potentialGroups.size === 0) {
       return false;
     }
@@ -966,15 +1089,25 @@ function Screen({
   
   // Check if phone is in "confirmed but waiting for others" state
   // This happens when: phone has confirmed AND there are unconfirmed members waiting
-  // We need to calculate unconfirmedNearbyPhones first to check this, but we'll do a quick check here
+  // Only check members who have the search screen open
   const isWaitingForOthers = (() => {
     if (!hasConfirmedInPotentialGroup || !phonePotentialGroup) {
       return false;
     }
     
-    // Quick check: are there any unconfirmed members in the current potential group?
-    const unconfirmedCount = Array.from(phonePotentialGroup.memberIds).filter(
-      id => !phonePotentialGroup.confirmedIds.has(id) && id !== body.id
+    // Filter to only members who have the search screen open
+    const membersWithSearchOpen = Array.from(phonePotentialGroup.memberIds).filter(
+      (id): id is number => groupSearchOpenPhones?.has(id) ?? false
+    );
+    
+    // Check for unconfirmed members in the potential group (only those with search screen open)
+    const unconfirmedCount = membersWithSearchOpen.filter(
+      id => {
+        // Skip self
+        if (id === body.id) return false;
+        // Check if they're unconfirmed
+        return !phonePotentialGroup.confirmedIds.has(id);
+      }
     ).length;
     
     return unconfirmedCount > 0;
@@ -1011,7 +1144,7 @@ function Screen({
           .filter(id => activePotentialGroup.confirmedIds.has(id))
           .map(id => allBodies.find(b => b.id === id))
           .filter((phone): phone is RigidBody => phone !== undefined)
-      : hasConfirmedInPotentialGroup && !isViewingSpecificGroup
+      : hasConfirmedInGroup && !isViewingSpecificGroup && phonePotentialGroup
         ? Array.from(phonePotentialGroup.memberIds)
             .filter(id => phonePotentialGroup.confirmedIds.has(id))
             .map(id => allBodies.find(b => b.id === id))
@@ -1026,7 +1159,7 @@ function Screen({
               Array.from(phoneConfirmedGroup.memberIds)
                 .map(id => allBodies.find(b => b.id === id))
                 .filter((phone): phone is RigidBody => phone !== undefined)
-            : confirmedPhones?.has(body.id) 
+            : (phonePotentialGroup?.confirmedIds.has(body.id))
               ? [body, ...confirmedNearbyPhones] 
               : confirmedNearbyPhones;
   
@@ -1039,26 +1172,47 @@ function Screen({
   // and show ALL unconfirmed members from it simultaneously
   // But also respect the viewing-specific-group logic from HEAD
   const unconfirmedNearbyPhones = (() => {
-    // If viewing a confirmed group screen, there are no unconfirmed members
-    // Confirmed groups are complete - all members have already confirmed
-    // The screen is a snapshot and should not show updates from other groups
-    if (isViewingConfirmedGroupScreen) {
-      return [];
-    }
-    
     // Helper function to get all unconfirmed members from a potential group
+    // Only include members who have the search screen open - ignore those who haven't opened the notification
     const getUnconfirmedFromGroup = (potentialGroup: PotentialGroup): RigidBody[] => {
       return Array.from(potentialGroup.memberIds)
         .filter(id => {
-          // Include if: not confirmed, not this phone, not recently removed, and exists in allBodies
+          // Include if: not confirmed, not this phone, not recently removed, has search screen open, and exists in allBodies
           return !potentialGroup.confirmedIds.has(id) && 
                  id !== body.id && 
                  !recentlyRemovedPhones?.has(id) &&
+                 (groupSearchOpenPhones?.has(id) ?? false) &&
                  allBodies.some(b => b.id === id);
         })
         .map(id => allBodies.find(b => b.id === id))
         .filter((phone): phone is RigidBody => phone !== undefined);
     };
+    
+    // If viewing a confirmed group screen, check if there's a DIFFERENT potential group
+    // (e.g., Phone A viewing confirmed group with B,C, but also in potential group with D)
+    // In this case, we should show unconfirmed members from the other potential group
+    if (isViewingConfirmedGroupScreen && activeConfirmedGroup) {
+      // Find potential groups that contain this phone but are different from the confirmed group
+      if (potentialGroups) {
+        for (const [groupId, potentialGroup] of potentialGroups) {
+          // Check if this potential group contains this phone
+          if (potentialGroup.memberIds.has(body.id)) {
+            // Check if this potential group is DIFFERENT from the confirmed group being viewed
+            // (i.e., has members not in the confirmed group)
+            const hasDifferentMembers = Array.from(potentialGroup.memberIds).some(
+              id => !activeConfirmedGroup.memberIds.has(id)
+            );
+            
+            if (hasDifferentMembers) {
+              // This is a different potential group - show its unconfirmed members
+              return getUnconfirmedFromGroup(potentialGroup);
+            }
+          }
+        }
+      }
+      // If no different potential group found, return empty (viewing confirmed group only)
+      return [];
+    }
     
     // Strategy 1: If we found a potential group for this phone, use it directly
     if (phonePotentialGroup) {
@@ -1123,7 +1277,16 @@ function Screen({
     // This should rarely be used since we should always have potential group data
     if (viewState !== 'groupConfirm' && viewState !== 'groupSearch') {
       return nearbyPhones.filter(phone => {
-        const isConfirmed = confirmedPhones?.has(phone.id);
+        // Check if confirmed in any potential group
+        let isConfirmed = false;
+        if (potentialGroups) {
+          for (const [groupId, potentialGroup] of potentialGroups) {
+            if (potentialGroup.memberIds.has(phone.id) && potentialGroup.confirmedIds.has(phone.id)) {
+              isConfirmed = true;
+              break;
+            }
+          }
+        }
         const isInGroupSearch = groupSearchOpenPhones?.has(phone.id) ?? false;
         const isRemoved = recentlyRemovedPhones?.has(phone.id);
         return !isConfirmed && isInGroupSearch && !isRemoved;
@@ -1211,13 +1374,13 @@ function Screen({
 
   // Control visibility and exit animation of "Waiting for Others..." pill
   // Only show when user has confirmed in a potential group AND there are unconfirmed members
-  const shouldShowPill = unconfirmedNearbyPhones.length > 0 && hasConfirmedInPotentialGroup;
+  const shouldShowPill = unconfirmedNearbyPhones.length > 0 && hasConfirmedInGroup;
   const [showUnconfirmedPill, setShowUnconfirmedPill] = useState(shouldShowPill);
   const [isUnconfirmedExiting, setIsUnconfirmedExiting] = useState(false);
   const prevShouldShowPillRef = useRef(shouldShowPill);
 
   useEffect(() => {
-    const shouldShow = unconfirmedNearbyPhones.length > 0 && hasConfirmedInPotentialGroup;
+    const shouldShow = unconfirmedNearbyPhones.length > 0 && hasConfirmedInGroup;
     const prevShouldShow = prevShouldShowPillRef.current;
     prevShouldShowPillRef.current = shouldShow;
 
@@ -1254,7 +1417,7 @@ function Screen({
 
       return () => clearTimeout(timeout);
     }
-  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen, hasConfirmedInPotentialGroup]);
+  }, [unconfirmedNearbyPhones.length, viewState, isViewingConfirmedGroupScreen, hasConfirmedInGroup]);
 
   // Bug 2 Fix: Update activeGroupId when a potential group transitions to confirmed
   // When a potential group becomes confirmed, it gets a new sequential ID (e.g., "potential-1" -> "1")
@@ -1304,8 +1467,8 @@ function Screen({
     const wasInGroupSearch = prevInGroupSearchRef.current;
     prevInGroupSearchRef.current = isInGroupSearch;
     
-    // Check if user has confirmed (is in confirmedPhones or has confirmed in potential group)
-    const isConfirmed = confirmedPhones?.has(body.id) || phonePotentialGroup?.confirmedIds.has(body.id);
+    // Check if user has confirmed (has confirmed in potential group)
+    const isConfirmed = phonePotentialGroup?.confirmedIds.has(body.id);
     
     // Don't reset viewState if user is in groupConfirm state and has confirmed
     // This prevents the swipe-to-confirm transition from being interrupted
@@ -1322,15 +1485,15 @@ function Screen({
         updateViewState('homeScreen');
       }
     }
-  }, [groupSearchOpenPhones, phoneConfirmedGroup, viewState, body.id, confirmedPhones, phonePotentialGroup]);
+  }, [groupSearchOpenPhones, phoneConfirmedGroup, viewState, body.id, phonePotentialGroup]);
   
   useEffect(() => {
     const wasInPotentialGroup = prevInPotentialGroupRef.current;
     const isInPotentialGroup = !!phonePotentialGroup;
     prevInPotentialGroupRef.current = isInPotentialGroup;
     
-    // Check if user has confirmed (is in confirmedPhones or has confirmed in potential group)
-    const isConfirmed = confirmedPhones?.has(body.id) || phonePotentialGroup?.confirmedIds.has(body.id);
+    // Check if user has confirmed (has confirmed in potential group)
+    const isConfirmed = phonePotentialGroup?.confirmedIds.has(body.id);
     
     // Don't reset viewState if user is in groupConfirm state and has confirmed
     // This prevents the swipe-to-confirm transition from being interrupted
@@ -1370,7 +1533,7 @@ function Screen({
     if (isRecentlyRemoved && !phoneConfirmedGroup && viewState !== 'homeScreen') {
       updateViewState('homeScreen');
     }
-  }, [phonePotentialGroup, phoneConfirmedGroup, viewState, isRecentlyRemoved, confirmedPhones, body.id]);
+  }, [phonePotentialGroup, phoneConfirmedGroup, viewState, isRecentlyRemoved, body.id]);
   
   // Clear "recently removed" flag when user moves away from proximity
   // This allows them to see notifications again when they return
@@ -1688,8 +1851,9 @@ function Screen({
           {/* Nearby phone profiles - positioned based on proximity data.
               Hidden in groupConfirm when waiting for others (unless there are new potential groups).
               When waiting for others, only show phones from new potential groups.
-              Also hidden when notification is in pill form. */}
-          {((viewState !== 'groupConfirm') || (viewState === 'groupConfirm' && hasNewPotentialGroups)) && notificationVisible && (() => {
+              Also hidden when notification is in pill form.
+              Hidden when viewing a confirmed group screen (compass bubbles should only appear in Dynamic Island). */}
+          {!isViewingConfirmedGroupScreen && ((viewState !== 'groupConfirm') || (viewState === 'groupConfirm' && hasNewPotentialGroups)) && notificationVisible && (() => {
             // Filter out recently removed users immediately to ensure they don't appear on any device
             let nearbyWithinRange = proximityData
               .filter(data => isWithinProximityRange(data))
@@ -1736,18 +1900,23 @@ function Screen({
               );
             }
             
-            // In groupSearch view, show all nearby users who are in proximity
-            // The group membership filter was too restrictive - it prevented new users
-            // (like a third phone) from appearing even when they're in proximity
-            // The updatePotentialGroups function will add all nearby users to the group,
-            // so we should show all users in proximity, not just those already in the group
-            // Removed users are filtered out here to ensure they don't appear on any device
+            // In groupSearch view, only show users who have opened the notification themselves
+            // Users should only appear if they are in the groupSearchOpenPhones set
+            if (viewState === 'groupSearch') {
+              nearbyWithinRange = nearbyWithinRange.filter(data => 
+                groupSearchOpenPhones?.has(data.phoneId) ?? false
+              );
+            }
 
             // Add exiting users with their last known proximity data so they can animate out
+            // Only include exiting users who have opened the notification (for groupSearch view)
             exitingPhoneIds.forEach(phoneId => {
               const lastData = lastProximityDataRef.current.get(phoneId);
               if (lastData && !recentlyRemovedPhones?.has(phoneId)) {
-                nearbyWithinRange.push(lastData);
+                // In groupSearch view, only add exiting users who had opened the notification
+                if (viewState !== 'groupSearch' || (groupSearchOpenPhones?.has(phoneId) ?? false)) {
+                  nearbyWithinRange.push(lastData);
+                }
               }
             });
 
@@ -1894,13 +2063,22 @@ function Screen({
               const size = isHome ? notificationSize : fullSizes[index];
               
               // Check if this user is confirmed (should not be swipeable)
-              const isConfirmed = confirmedPhones?.has(entry.phoneId);
+              // Check if they've confirmed in any potential group
+              let isConfirmed = false;
+              if (potentialGroups) {
+                for (const [groupId, potentialGroup] of potentialGroups) {
+                  if (potentialGroup.memberIds.has(entry.phoneId) && potentialGroup.confirmedIds.has(entry.phoneId)) {
+                    isConfirmed = true;
+                    break;
+                  }
+                }
+              }
               const isBeingSwiped = swipedUser === entry.phoneId;
               const swipeOffsetForUser = isBeingSwiped ? swipeRemoveOffset : { x: 0, y: 0 };
               const opacity = isBeingSwiped ? Math.max(0, 1 - currentSwipeRemoveDistanceRef.current / 100) : 1;
               
-              // Only allow swiping unconfirmed users in groupSearch view
-              const isSwipeable = isGroupSearch && !isConfirmed && tool === 'interact';
+              // Allow swiping all users (including confirmed) in groupSearch view
+              const isSwipeable = isGroupSearch && tool === 'interact';
 
               // Check if user is entering or exiting
               // A user is entering if they're newly appearing (not in previous proximity ref but currently in proximity)
@@ -1928,6 +2106,29 @@ function Screen({
               // Determine transition duration based on animation type
               const transitionDuration = isExiting ? exitDuration : (isEntering ? enterDuration : springDuration);
               
+              // Check if this person has confirmed in a potential group
+              // Only show checkmark on groupSearch screen
+              const shouldShowCheckmark = (() => {
+                if (!isGroupSearch) return false;
+                
+                // Check if this person is in a potential group AND has confirmed in that potential group
+                if (!potentialGroups) return false;
+                
+                // First check if they're in any potential group
+                let isInPotentialGroup = false;
+                for (const [groupId, potentialGroup] of potentialGroups) {
+                  if (potentialGroup.memberIds.has(entry.phoneId)) {
+                    isInPotentialGroup = true;
+                    // Check if they've confirmed in this potential group
+                    if (potentialGroup.confirmedIds.has(entry.phoneId)) {
+                      return true;
+                    }
+                  }
+                }
+                
+                return false;
+              })();
+              
               const transformValue = `translate(-50%, -50%) translate(${x + swipeOffsetForUser.x}px, ${y + swipeOffsetForUser.y}px) scale(${scale})`;
 
               return (
@@ -1943,7 +2144,7 @@ function Screen({
                     borderRadius: isHome ? '50%' : `${size / 2}px`,
                     willChange: 'transform, width, height, opacity',
                     transition: isBeingSwiped ? 'none' : `width ${springDuration} ${springCurve}, height ${springDuration} ${springCurve}, border-radius ${springDuration} ${springCurve}, transform ${transitionDuration} ${springCurve}, opacity ${springDuration} ${springCurve}`,
-                    overflow: 'hidden',
+                    overflow: 'visible',
                     backgroundColor: 'white',
                     opacity,
                     cursor: isSwipeable ? 'grab' : 'default',
@@ -1953,30 +2154,115 @@ function Screen({
                   onMouseDown={isSwipeable ? (e) => handleUserSwipeStart(e, entry.phoneId) : undefined}
                   onTouchStart={isSwipeable ? (e) => handleUserSwipeStart(e, entry.phoneId) : undefined}
                 >
-                  <img
-                    alt=""
-                    className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
-                    style={{ borderRadius: 'inherit' }}
-                    src={entry.profileImage}
-                  />
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      borderRadius: isHome ? '50%' : `${size / 2}px`,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <img
+                      alt=""
+                      className="absolute inset-0 max-w-none object-50%-50% object-cover pointer-events-none size-full"
+                      style={{ borderRadius: 'inherit' }}
+                      src={entry.profileImage}
+                    />
+                  </div>
+                  {/* Checkmark overlay - only visible when person has confirmed and is waiting for you */}
+                  {shouldShowCheckmark && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '-2px',
+                        right: '-2px',
+                        width: '16px',
+                        height: '16px',
+                        borderRadius: '50%',
+                        backgroundColor: '#34C759',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 10,
+                        opacity: scale, // Fade with avatar scale
+                        transform: 'scale(0)',
+                        animation: 'checkmarkGrow 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+                        transition: `opacity ${transitionDuration} ${springCurve}`,
+                      }}
+                    >
+                      <svg
+                        width="10"
+                        height="8"
+                        viewBox="0 0 10 8"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        style={{ transform: 'translateY(0.75px)' }}
+                      >
+                        <path
+                          d="M1 4L3.5 6.5L9 1"
+                          stroke="white"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </div>
+                  )}
                 </div>
               );
             });
           })()}
           
           {/* Swipe to Confirm with arrow - only visible in full view */}
-          <div 
-            className="absolute h-[577.625px] left-[calc(50%+0.5px)] top-[63.19px] translate-x-[-50%] w-[577.626px]"
-            onMouseDown={handleConfirmSwipeStart}
-            onTouchStart={handleConfirmSwipeStart}
-            style={{
-              opacity: viewState === 'groupSearch' ? 1 : 0,
-              willChange: 'opacity, transform',
-              transition: `opacity ${springDuration} ${springCurve}`,
-              pointerEvents: viewState === 'groupSearch' ? 'auto' : 'none',
-              cursor: viewState === 'groupSearch' ? 'grab' : 'default',
-            }}
-          >
+          {/* Hide if the visible members in search screen form an existing confirmed group */}
+          {(() => {
+            // Check if visible members form an existing confirmed group combination
+            let isExistingGroup = false;
+            if (viewState === 'groupSearch' && groupSearchOpenPhones && confirmedGroups) {
+              // Get all visible member IDs: those with search screen open who are in proximity, plus current user
+              const visibleMemberIds = new Set<number>();
+              visibleMemberIds.add(body.id); // Current user is always visible
+              
+              // Add members who are in proximity and have search screen open
+              if (proximityData) {
+                proximityData
+                  .filter(data => isWithinProximityRange(data))
+                  .filter(data => !recentlyRemovedPhones?.has(data.phoneId))
+                  .filter(data => groupSearchOpenPhones.has(data.phoneId))
+                  .forEach(data => visibleMemberIds.add(data.phoneId));
+              }
+              
+              // Check if this exact combination matches any confirmed group
+              if (visibleMemberIds.size >= 2) {
+                const visibleMemberArray = Array.from(visibleMemberIds).sort((a, b) => a - b);
+                const combinationKey = visibleMemberArray.join(',');
+                
+                for (const confirmedGroup of confirmedGroups.values()) {
+                  const confirmedMembers = Array.from(confirmedGroup.memberIds).sort((a, b) => a - b);
+                  const confirmedKey = confirmedMembers.join(',');
+                  
+                  // Check if it's an exact match (same members, same size)
+                  if (combinationKey === confirmedKey) {
+                    isExistingGroup = true;
+                    break;
+                  }
+                }
+              }
+            }
+            
+            return isExistingGroup ? null : (
+              <div 
+                className="absolute h-[480px] left-[calc(50%+0.5px)] top-[150px] translate-x-[-50%] w-[480px]"
+                onMouseDown={handleConfirmSwipeStart}
+                onTouchStart={handleConfirmSwipeStart}
+                style={{
+                  opacity: viewState === 'groupSearch' ? 1 : 0,
+                  willChange: 'opacity, transform',
+                  transition: `opacity ${springDuration} ${springCurve}`,
+                  pointerEvents: viewState === 'groupSearch' ? 'auto' : 'none',
+                  cursor: viewState === 'groupSearch' ? 'grab' : 'default',
+                }}
+              >
             <div
               style={{
                 width: '100%',
@@ -2011,6 +2297,8 @@ function Screen({
               </svg>
             </div>
           </div>
+            );
+          })()}
           
           {/* GroupDrop title - shrinks into top-left corner in notification view, larger lower title in full view */}
           <p 
@@ -2029,14 +2317,37 @@ function Screen({
           
           {/* Representative Group Dropdown - only visible in groupSearch when there are nearby phones */}
           {viewState === 'groupSearch' && hasNearbyPhones && onRepresentativeGroupChange && (() => {
+            // Get nearby phone IDs for "New Group"
+            const nearbyPhoneIds = proximityData
+              .filter(data => data.distanceCm <= 8.5)
+              .filter(data => !recentlyRemovedPhones?.has(data.phoneId))
+              .map(data => data.phoneId)
+              .slice(0, 4);
+            
             // Get all groups this phone is a member of
-            const phoneGroups = confirmedGroups 
+            const allPhoneGroups = confirmedGroups 
               ? Array.from(confirmedGroups.values()).filter(group => group.memberIds.has(body.id))
               : [];
             
+            // Filter groups to only show those that have at least one nearby person NOT already in the group
+            // This ensures we only show groups where there's someone new to add
+            const phoneGroups = allPhoneGroups.filter(group => {
+              // Check if there's at least one nearby phone that is NOT in this group
+              return nearbyPhoneIds.some(phoneId => !group.memberIds.has(phoneId));
+            });
+            
             // Always show dropdown (even if phone isn't in any groups - they can select "New Group")
             const selectedGroupId = currentRepresentativeGroupId || null;
-            const hasConfirmedGroups = phoneGroups.length > 0;
+            
+            // Include selected group in the list even if it's filtered out, so user can see their selection
+            const selectedGroupInList = selectedGroupId && allPhoneGroups.find(g => g.id === selectedGroupId);
+            const displayGroups = selectedGroupInList && !phoneGroups.find(g => g.id === selectedGroupId)
+              ? [...phoneGroups, selectedGroupInList]
+              : phoneGroups;
+            
+            const hasConfirmedGroups = displayGroups.length > 0;
+            // Allow dropdown access if phone has confirmed groups OR is representing a group
+            const canAccessDropdown = hasConfirmedGroups || selectedGroupId !== null;
             
             // Get selected group for display
             const selectedGroup = selectedGroupId && confirmedGroups 
@@ -2052,13 +2363,6 @@ function Screen({
                 })
                 .filter((name): name is string => name !== undefined);
             };
-            
-            // Get nearby phone IDs for "New Group"
-            const nearbyPhoneIds = proximityData
-              .filter(data => data.distanceCm <= 8.5)
-              .filter(data => !recentlyRemovedPhones?.has(data.phoneId))
-              .map(data => data.phoneId)
-              .slice(0, 4);
             
             return (
               <div 
@@ -2076,18 +2380,18 @@ function Screen({
                 <button
                   ref={representativeButtonRef}
                   onClick={(e) => {
-                    if (tool !== 'interact' || !hasConfirmedGroups) return;
+                    if (tool !== 'interact' || !canAccessDropdown) return;
                     e.stopPropagation();
                     setIsRepresentativeDropdownOpen(!isRepresentativeDropdownOpen);
                   }}
-                  disabled={!hasConfirmedGroups}
+                  disabled={!canAccessDropdown}
                   className="bg-[#222222] text-white px-3 py-1.5 text-sm flex items-center justify-between hover:bg-[#333333] transition-colors"
                   style={{
                     fontFamily: "'SF Pro', sans-serif",
                     fontSize: '12px',
                     borderRadius: isRepresentativeDropdownOpen ? '8px 8px 0 0' : '8px',
                     width: 'fit-content',
-                    minWidth: '140px',
+                    minWidth: canAccessDropdown ? '140px' : 'fit-content',
                     maxWidth: '300px',
                   }}
                 >
@@ -2103,7 +2407,7 @@ function Screen({
                       ? getMemberNames(selectedGroup.memberIds).join(', ')
                       : 'New Group'}
                   </span>
-                  {hasConfirmedGroups && (
+                  {canAccessDropdown && (
                     <span 
                       style={{ 
                         fontSize: '12px',
@@ -2175,7 +2479,7 @@ function Screen({
                         </div>
                       </div>
                     </button>
-                    {phoneGroups.map((group) => {
+                    {displayGroups.map((group) => {
                       const groupMemberIds = group.memberIds;
                       const groupMemberNames = getMemberNames(groupMemberIds);
                       const isSelected = selectedGroupId === group.id;
@@ -2963,7 +3267,6 @@ export function PhoneWithProximity({
   allBodies,
   onConfirm,
   onUnconfirm,
-  confirmedPhones,
   groupSearchOpenPhones,
   onGroupSearchStateChange,
   confirmedGroups,
@@ -3027,7 +3330,6 @@ export function PhoneWithProximity({
           allBodies={allBodies}
           onConfirm={onConfirm}
           onUnconfirm={onUnconfirm}
-          confirmedPhones={confirmedPhones}
           groupSearchOpenPhones={groupSearchOpenPhones}
           onGroupSearchStateChange={onGroupSearchStateChange}
           confirmedGroups={confirmedGroups}

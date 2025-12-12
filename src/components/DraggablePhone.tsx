@@ -303,6 +303,40 @@ export function DraggablePhone({
     e.preventDefault();
     e.stopPropagation();
 
+    // Convert screen coordinates to world coordinates
+    const world = screenToWorld(e.clientX, e.clientY);
+    
+    // Check if click is outside the phone's corner bounds
+    // Only allow rotation to start if clicking outside the phone bounds
+    const isOutsideCorner = (() => {
+      const phoneLeft = body.x;
+      const phoneRight = body.x + body.width;
+      const phoneTop = body.y;
+      const phoneBottom = body.y + body.height;
+      
+      switch (corner) {
+        case 'top-left':
+          // Must be outside top-left corner: left of phone OR above phone
+          return world.x < phoneLeft || world.y < phoneTop;
+        case 'top-right':
+          // Must be outside top-right corner: right of phone OR above phone
+          return world.x > phoneRight || world.y < phoneTop;
+        case 'bottom-left':
+          // Must be outside bottom-left corner: left of phone OR below phone
+          return world.x < phoneLeft || world.y > phoneBottom;
+        case 'bottom-right':
+          // Must be outside bottom-right corner: right of phone OR below phone
+          return world.x > phoneRight || world.y > phoneBottom;
+        default:
+          return false;
+      }
+    })();
+    
+    // Only start rotation if click is outside the phone corner
+    if (!isOutsideCorner) {
+      return; // Don't start rotation if clicking inside phone bounds
+    }
+
     const pointerId = e.pointerId;
     activePointerIdRef.current = pointerId;
     rotationCornerRef.current = corner;
@@ -316,9 +350,6 @@ export function DraggablePhone({
     isDraggingRef.current = false;
     body.isDragging = true;
     setActiveRotationCorner(corner);
-
-    // Convert screen coordinates to world coordinates
-    const world = screenToWorld(e.clientX, e.clientY);
 
     // Rotation center is the phone's geometric center
     const phoneCenterX = body.x + body.width / 2;
@@ -995,14 +1026,30 @@ export function DraggablePhone({
       {/* Corner rotation arrows */}
       {/* Top-left corner hover zone */}
       <div
-        onMouseEnter={() => setHoveredCorner('top-left')}
+        onMouseEnter={(e) => {
+          const world = screenToWorld(e.clientX, e.clientY);
+          const phoneLeft = body.x;
+          const phoneTop = body.y;
+          // Only set hover if outside phone bounds
+          if (world.x < phoneLeft || world.y < phoneTop) {
+            setHoveredCorner('top-left');
+          }
+        }}
         onMouseLeave={() => {
           setHoveredCorner(null);
           setMousePosition(null);
         }}
         onMouseMove={(e) => {
           const world = screenToWorld(e.clientX, e.clientY);
-          updateCursorAngle(world.x, world.y, undefined, 'top-left');
+          const phoneLeft = body.x;
+          const phoneTop = body.y;
+          // Only update cursor if outside phone bounds
+          if (world.x < phoneLeft || world.y < phoneTop) {
+            updateCursorAngle(world.x, world.y, undefined, 'top-left');
+            setHoveredCorner('top-left');
+          } else {
+            setHoveredCorner(null);
+          }
         }}
         onPointerDown={(e) => handleCornerRotationDown(e, 'top-left')}
         className="absolute select-none"
@@ -1024,14 +1071,30 @@ export function DraggablePhone({
 
       {/* Top-right corner hover zone */}
       <div
-        onMouseEnter={() => setHoveredCorner('top-right')}
+        onMouseEnter={(e) => {
+          const world = screenToWorld(e.clientX, e.clientY);
+          const phoneRight = body.x + body.width;
+          const phoneTop = body.y;
+          // Only set hover if outside phone bounds
+          if (world.x > phoneRight || world.y < phoneTop) {
+            setHoveredCorner('top-right');
+          }
+        }}
         onMouseLeave={() => {
           setHoveredCorner(null);
           setMousePosition(null);
         }}
         onMouseMove={(e) => {
           const world = screenToWorld(e.clientX, e.clientY);
-          updateCursorAngle(world.x, world.y, undefined, 'top-right');
+          const phoneRight = body.x + body.width;
+          const phoneTop = body.y;
+          // Only update cursor if outside phone bounds
+          if (world.x > phoneRight || world.y < phoneTop) {
+            updateCursorAngle(world.x, world.y, undefined, 'top-right');
+            setHoveredCorner('top-right');
+          } else {
+            setHoveredCorner(null);
+          }
         }}
         onPointerDown={(e) => handleCornerRotationDown(e, 'top-right')}
         className="absolute select-none"
@@ -1053,14 +1116,30 @@ export function DraggablePhone({
 
       {/* Bottom-left corner hover zone */}
       <div
-        onMouseEnter={() => setHoveredCorner('bottom-left')}
+        onMouseEnter={(e) => {
+          const world = screenToWorld(e.clientX, e.clientY);
+          const phoneLeft = body.x;
+          const phoneBottom = body.y + body.height;
+          // Only set hover if outside phone bounds
+          if (world.x < phoneLeft || world.y > phoneBottom) {
+            setHoveredCorner('bottom-left');
+          }
+        }}
         onMouseLeave={() => {
           setHoveredCorner(null);
           setMousePosition(null);
         }}
         onMouseMove={(e) => {
           const world = screenToWorld(e.clientX, e.clientY);
-          updateCursorAngle(world.x, world.y, undefined, 'bottom-left');
+          const phoneLeft = body.x;
+          const phoneBottom = body.y + body.height;
+          // Only update cursor if outside phone bounds
+          if (world.x < phoneLeft || world.y > phoneBottom) {
+            updateCursorAngle(world.x, world.y, undefined, 'bottom-left');
+            setHoveredCorner('bottom-left');
+          } else {
+            setHoveredCorner(null);
+          }
         }}
         onPointerDown={(e) => handleCornerRotationDown(e, 'bottom-left')}
         className="absolute select-none"
@@ -1082,14 +1161,30 @@ export function DraggablePhone({
 
       {/* Bottom-right corner hover zone */}
       <div
-        onMouseEnter={() => setHoveredCorner('bottom-right')}
+        onMouseEnter={(e) => {
+          const world = screenToWorld(e.clientX, e.clientY);
+          const phoneRight = body.x + body.width;
+          const phoneBottom = body.y + body.height;
+          // Only set hover if outside phone bounds
+          if (world.x > phoneRight || world.y > phoneBottom) {
+            setHoveredCorner('bottom-right');
+          }
+        }}
         onMouseLeave={() => {
           setHoveredCorner(null);
           setMousePosition(null);
         }}
         onMouseMove={(e) => {
           const world = screenToWorld(e.clientX, e.clientY);
-          updateCursorAngle(world.x, world.y, undefined, 'bottom-right');
+          const phoneRight = body.x + body.width;
+          const phoneBottom = body.y + body.height;
+          // Only update cursor if outside phone bounds
+          if (world.x > phoneRight || world.y > phoneBottom) {
+            updateCursorAngle(world.x, world.y, undefined, 'bottom-right');
+            setHoveredCorner('bottom-right');
+          } else {
+            setHoveredCorner(null);
+          }
         }}
         onPointerDown={(e) => handleCornerRotationDown(e, 'bottom-right')}
         className="absolute select-none"
